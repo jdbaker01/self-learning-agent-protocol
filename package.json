@@ -1,0 +1,35 @@
+{
+  "name": "self-learning-agent-protocol",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "16.2.4",
+    "react": "19.2.5",
+    "react-dom": "19.2.5",
+    "ai": "6.0.168",
+    "@ai-sdk/openai": "3.0.53",
+    "@ai-sdk/react": "3.0.170",
+    "better-sqlite3": "11.7.0",
+    "zod": "3.25.76",
+    "clsx": "2.1.1",
+    "tailwind-merge": "2.5.5",
+    "nanoid": "5.0.9"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "@types/react": "19.0.2",
+    "@types/react-dom": "19.0.2",
+    "@types/better-sqlite3": "7.6.12",
+    "typescript": "5.7.2",
+    "tailwindcss": "3.4.17",
+    "postcss": "8.4.49",
+    "autoprefixer": "10.4.20"
+  }
+}

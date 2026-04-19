@@ -30,6 +30,8 @@ build/
 .env.local
 .env.*.local
 
+tsconfig.tsbuildinfo
+
 # IDE
 .vscode/
 .idea/
