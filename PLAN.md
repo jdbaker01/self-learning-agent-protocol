@@ -1,109 +1,135 @@
 # Implementation Plan: Self-Learning Agent Protocol
 
-This document proposes an implementation of the **Autogenesis Protocol (AGP)** from *"Autogenesis: A Self-Evolving Agent Protocol"* (arXiv:2604.15034), scoped to a single-user web app where you create an agent from a description and chat with it, and the agent improves with every turn.
+This document implements the **Autogenesis Protocol (AGP)** from *"Autogenesis: A Self-Evolving Agent Protocol"* (arXiv:2604.15034), scoped to a single-user web app where you create an agent from a description, chat with it in sessions, and — at the end of a session — click **Learn** to run the SEPL evolutionary loop.
 
 ---
 
 ## 1. What we are building (user-facing)
 
-A web app with two screens:
+Three screens:
 
-1. **Agents list / Create Agent** — a form: name, one-paragraph description of what the agent should do ("act as my recipe coach", "help me write Go code", etc.). On submit, the backend bootstraps an RSPL agent (prompt + tool contract + empty memory) and returns an `agent_id`.
-2. **Chat view** — conversational UI for a given `agent_id`. Beside the transcript, a sidebar shows the agent's current **evolvable state** — prompt text, tools, memory entries, and a version timeline. Each turn, after the response is streamed back, a small "Evolving…" indicator runs while the SEPL loop reflects on the turn, proposes updates, evaluates them, and commits (or rolls back). A "diff" badge on the version timeline lets you inspect what the agent just changed about itself.
+1. **Agents list / Create Agent** — form: name, one-paragraph description ("act as my recipe coach"). On submit, the backend bootstraps an RSPL agent (prompt + starter tools + empty memory) and returns an `agent_id`.
+2. **Chat view** — conversational UI for a given `agent_id`. Sidebar shows the agent's current **evolvable state** (prompt, tools, memory) and a **version timeline**. The session is a contiguous set of turns. An **End Session** button closes the session and exposes a **Learn** button.
+3. **Learn view** — clicked after a session ends. Runs the SEPL loop **foreground** and **streams each step visibly**:
+   - *Step 1 — Reflect:* streaming the hypotheses (`H`) the model derived from the session trace.
+   - *Step 2 — Select:* streaming the concrete modification proposals (`D`) per hypothesis.
+   - *Step 3 — Improve:* shows a diff of each candidate change applied to the evolvable state.
+   - *Step 4 — Evaluate:* shows rule-gate results and the LLM-judge replay scores on the held-out turns from the session.
+   - *Step 5 — Commit:* accept/reject decision per proposal, with reason. Accepted proposals bump the version; rejected ones disappear.
+   After Learn finishes, the user returns to the chat view (now on version `v+1`) and starts a new session.
 
-Optional third screen (nice-to-have, not v1): **Trace viewer** showing observational traces (Z), hypotheses (H), proposals (D), evaluation scores (S), commit decisions (κ) — the auditable lineage the paper emphasizes.
+Fourth screen (included for auditability, since the paper emphasizes it): **Trace/Version viewer** — browse prior sessions, their traces `Z`, the hypotheses, proposals, eval results, and commit outcomes for each Learn run.
 
 ---
 
 ## 2. Mapping the paper onto this app
 
-The paper defines two protocol layers. We implement both, scoped to what a chat agent needs:
-
 ### Layer 1 — RSPL (Resource Substrate Protocol Layer)
 
 Five resource types, all versioned and stored in a registry:
 
-| Entity type | In this app | Evolvable? |
+| Entity type | In this app | Evolvable in v1? |
 |---|---|---|
 | **Prompt** | System prompt for the agent | Yes |
-| **Agent** | Decision policy (model choice, tool-use strategy, reply style rubric) | Yes |
-| **Tool** | Callable functions the agent can invoke — start with `search_memory`, `write_memory`, `get_time`; tools can be added/edited during evolution | Yes |
-| **Environment** | The chat session (user, transcript, task intent inferred each turn) | No — observed, not mutated |
-| **Memory** | Persistent notes about the user and prior turns, retrievable by semantic search | Yes |
+| **Agent** | Decision policy (model choice, tool-use strategy, reply style) | Yes |
+| **Tool** | Callable functions (starter set: `search_memory`, `write_memory`, `get_time`). Tools can be edited or newly created from an allowlist | Yes |
+| **Environment** | The chat session (user, transcript, inferred intent per turn) | No — observed only |
+| **Memory** | Persistent notes retrievable by semantic search | Yes |
 
 Each resource is a `RegistrationRecord` (paper §3.1.1):
-- `name`, `description`, `version`, `implementation` (source/config), `constructor_params`, `exported_representations` (JSON schema / natural-language contract for the LLM), `learnability_flag`, `metadata`.
+`{ name, description, version, implementation, constructor_params, exported_representations, learnability_flag, metadata }`.
 
-Every resource lives in a **type-specific registry** with a **context manager** exposing the operator set from Table 7: `init`, `build`, `register`, `unregister`, `get`, `list`, `retrieve` (semantic search), `update`, `copy`, `restore`, `get_variables`, `set_variables`, `run`, `save_contract`, `load_contract`, `save_to_json`, `load_from_json`.
+Every resource lives in a **type-specific registry** with a **context manager** exposing the operator set from Table 7: `init`, `build`, `register`, `unregister`, `get`, `get_info`, `list`, `retrieve` (semantic search), `update`, `copy`, `restore`, `get_variables`, `set_variables`, `run`, `save_contract`, `load_contract`, `save_to_json`, `load_from_json`.
 
 Infrastructure services (paper §3.1.4):
-- **Model Manager** — thin wrapper over the Anthropic SDK (default) with provider-agnostic interface so we can swap later.
-- **Version Manager** — every `set_variables`/`update` auto-increments a semver string, snapshots the config, and stores it for rollback.
-- **Dynamic Manager** — serialization so resources can be hot-swapped without restarting the app.
-- **Tracer** — records full turn traces (user msg, tool calls, tool results, final reply, latency, errors).
+- **Model Manager** — provider-agnostic wrapper. v1 uses **OpenAI** via the Vercel `ai` SDK (easy multi-provider). Tiered model routing:
+  - `chat`: `gpt-4.1-mini` (fast, cheap per turn)
+  - `reflect`/`select` (hard reasoning in SEPL): `gpt-4.1`
+  - `judge` (evaluation replay): `gpt-4.1-mini`
+  - `embed` (memory retrieval): `text-embedding-3-small`
+  All four are config-swappable; switching to Anthropic or a local model is one adapter change.
+- **Version Manager** — every `set_variables`/`update` auto-increments a semver string, snapshots the config, stores for rollback.
+- **Dynamic Manager** — serialization so resources hot-swap without restarting.
+- **Tracer** — records full turn traces (user msg, tool calls, tool results, final reply, latency, errors, embeddings used).
 
 ### Layer 2 — SEPL (Self-Evolution Protocol Layer)
 
-After every user turn (or a configurable cadence like "every 3 turns" to keep latency down), run the **reflection-driven optimizer** (paper §4.2, Algorithm 1) as the default SEPL instantiation:
+Triggered by the **Learn** button at end of session. Input: trace `Z` of all turns in the session + current `V_evo`. Output: a new committed version (or no change). The UI streams each operator's output.
 
-- **Reflect (ρ)** — LLM call that takes the trace `Z` and the current evolvable state `V_evo`, returns structured **hypotheses** `H` about what went wrong or could improve. Example outputs: `{area: "prompt", issue: "no instruction to ask clarifying questions before suggesting recipes", severity: 0.7}`.
-- **Select (σ)** — LLM call that turns each hypothesis into a **concrete modification proposal** `D`: `{op: "update_prompt", diff: "+ If the user's request is ambiguous, ask one clarifying question before responding."}` or `{op: "write_memory", content: "User prefers vegetarian meals."}` or `{op: "create_tool", spec: {...}}`.
-- **Improve (ι)** — apply proposals via RSPL `set_variables` / `register`, producing a **candidate** `V'_evo` that is a new version, not yet committed.
-- **Evaluate (ε)** — score the candidate. For a chat agent we cannot rerun the whole conversation deterministically, so we use a layered objective:
-  1. **Rule gates** (safety invariants from the paper): prompt length within limits, tool schema valid, no secrets leaked, candidate doesn't remove mandatory sections.
-  2. **LLM-as-judge** replay on a **held-out mini-eval set** built from the last N turns: compare candidate-state response against committed-state response on each turn, score on helpfulness/faithfulness/format. A candidate must meet or exceed baseline on aggregate.
-  3. **Explicit user feedback** if present (thumbs up/down on the last reply) — weighted heavily.
-- **Commit (κ)** — gating function. Accept iff rule gates pass AND eval score ≥ baseline (monotonicity, per the paper). On accept, bump version in RSPL. On reject, discard candidate (rollback is free because nothing was ever promoted).
+- **Reflect (ρ)**: `gpt-4.1` reads the session trace and current `V_evo`, returns structured hypotheses `H` about failure modes / improvement opportunities, scoped to the three evolvable surfaces (prompt, tools, memory). Example: `{area: "memory", issue: "user stated dietary restriction in turn 2 but agent didn't persist it", severity: 0.9}`.
+- **Select (σ)**: `gpt-4.1` translates each hypothesis into a concrete modification proposal `D` using a **typed proposal schema**:
+  - `update_prompt { diff: string }`
+  - `write_memory { content: string, tags: string[] }`
+  - `update_memory { id: string, content: string }`
+  - `delete_memory { id: string }`
+  - `update_tool { name: string, field: "description"|"args_schema"|"instructions", value: any }`
+  - `create_tool { name: string, description: string, args_schema: JSONSchema, implementation_ref: AllowlistKey }`
+- **Improve (ι)**: apply each proposal via the corresponding RSPL `set_variables` / `register`, producing a **candidate** `V'_evo` (new version, not yet committed).
+- **Evaluate (ε)**: layered objective:
+  1. **Rule gates** (safety invariants): prompt ≤ N tokens, tool JSON schemas validate, no secret-leak phrases removed, memory entries don't exceed budget, tool implementation refs in allowlist.
+  2. **LLM-judge replay**: rerun the last K turns from the session under `V'_evo` and score each candidate reply against the committed reply on (helpfulness, faithfulness, format) using `gpt-4.1-mini` as judge. Aggregate score must be ≥ baseline (monotonic improvement, per paper §3.2.2).
+  3. **Explicit user feedback**: thumbs on individual replies (if present) heavily weight the eval.
+- **Commit (κ)**: accept iff rule gates pass AND aggregate eval ≥ baseline. On accept, Version Manager bumps version. On reject, candidate is discarded (rollback is free — nothing was ever promoted).
 
-This runs in the background after each turn so the user is not blocked waiting for evolution.
+Per the paper, each accepted commit is a versioned transition with auditable lineage: the trace, hypotheses, proposals, eval results, and commit decision are all persisted as part of the version record.
 
 ---
 
-## 3. Architecture
+## 3. Architecture (TypeScript end-to-end, Vercel-ready)
+
+Next.js App Router (TypeScript) is both the frontend and the backend. API routes handle agent CRUD, chat streaming, and Learn. Database: SQLite locally (via `better-sqlite3`) with the same schema expressed as migrations so we can swap to Turso (libSQL) or Neon Postgres on Vercel without code changes.
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  Next.js frontend (React)                                │
-│    - /agents (create form, list)                         │
-│    - /agents/[id]/chat (streaming chat + state sidebar)  │
-└──────────────────────────┬───────────────────────────────┘
-                           │ HTTP + SSE
-┌──────────────────────────▼───────────────────────────────┐
-│  FastAPI backend (Python)                                │
-│  ┌─────────────────────────────────────────────────────┐ │
-│  │  RSPL layer                                          │ │
-│  │   PromptRegistry  AgentRegistry  ToolRegistry       │ │
-│  │   EnvRegistry     MemoryRegistry                     │ │
-│  │   + shared ContextManager / ServerInterface         │ │
-│  │   Infra: ModelManager, VersionManager,              │ │
-│  │          DynamicManager, Tracer                     │ │
-│  └─────────────────────────────────────────────────────┘ │
-│  ┌─────────────────────────────────────────────────────┐ │
-│  │  SEPL optimizer (reflect/select/improve/eval/commit) │ │
-│  │  Runs async after each turn                          │ │
-│  └─────────────────────────────────────────────────────┘ │
-│  ┌─────────────────────────────────────────────────────┐ │
-│  │  Chat runtime                                        │ │
-│  │   - loads current agent version                      │ │
-│  │   - streams LLM reply                                │ │
-│  │   - records trace → kicks off SEPL                   │ │
-│  └─────────────────────────────────────────────────────┘ │
-└──────────────────────────┬───────────────────────────────┘
-                           │
-                  ┌────────▼────────┐
-                  │  SQLite + files │
-                  │  (registries,   │
-                  │   versions,     │
-                  │   traces, mem)  │
-                  └─────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  Next.js (React, App Router, TypeScript)                 │
+│    UI                                                     │
+│      /agents               (list + create form)          │
+│      /agents/[id]/chat     (streaming chat + sidebar)    │
+│      /agents/[id]/learn    (SEPL step-by-step stream)    │
+│      /agents/[id]/history  (traces & versions)           │
+│    API routes (server, same deploy)                      │
+│      POST /api/agents                                    │
+│      GET  /api/agents[/:id]                              │
+│      POST /api/agents/:id/sessions                       │
+│      POST /api/sessions/:id/chat       (SSE streaming)   │
+│      POST /api/sessions/:id/end                          │
+│      POST /api/sessions/:id/learn      (SSE streaming)   │
+│      GET  /api/agents/:id/state                          │
+│      GET  /api/agents/:id/versions                       │
+│      GET  /api/agents/:id/traces                         │
+├──────────────────────────────────────────────────────────┤
+│  Domain modules (imported by API routes)                 │
+│    src/rspl/                                             │
+│      record.ts          RegistrationRecord types          │
+│      contextManager.ts  shared operator interface         │
+│      registries/        prompt.ts agent.ts tool.ts       │
+│                         env.ts memory.ts                 │
+│      infra/             modelManager.ts versionManager.ts│
+│                         dynamicManager.ts tracer.ts      │
+│    src/sepl/                                             │
+│      loop.ts            Algorithm 1 orchestrator         │
+│      reflect.ts         ρ                                │
+│      select.ts          σ                                │
+│      improve.ts         ι                                │
+│      evaluate.ts        ε (rule gates + judge)           │
+│      commit.ts          κ                                │
+│    src/runtime/                                          │
+│      bootstrap.ts       create_agent_from_description()  │
+│      chat.ts            one-turn executor                │
+│    src/storage/                                          │
+│      db.ts              SQLite via better-sqlite3        │
+│      schema.sql         tables + indexes                 │
+│      adapters/          sqlite.ts, libsql.ts (Turso)    │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ### Why these choices
 
-- **Python backend**: the paper's primitives (prompts, tool schemas, LLM calls) are the natural fit for Python's LLM tooling, and keeps the SEPL code close to the model layer.
-- **Next.js + React frontend**: streaming chat UI with `@anthropic-ai/sdk` over SSE is well-trodden; React makes the evolving-state sidebar and version timeline easy.
-- **SQLite + filesystem for v1**: registries and versions are small. `registry.db` holds registration records, versions, and traces; tool source and memory blobs live on disk keyed by `{type}/{name}/{version}`. Avoids a Postgres dependency for a single-user app. Upgrade path to Postgres is trivial (SQLAlchemy).
-- **Anthropic as default model** via `claude-sonnet-4-6` (balance of cost/quality for SEPL loop) and `claude-opus-4-7` as a config-switchable "strong" model for Reflect/Select. Model Manager abstracts this.
+- **TypeScript end-to-end**: deploys cleanly to Vercel with no cross-service plumbing. Single repo, single runtime, single deploy pipeline. Frontend types and API types share source.
+- **Vercel `ai` SDK** for the Model Manager adapter: first-class streaming, provider-agnostic (OpenAI today, Anthropic/local tomorrow with one config line), tool-use support.
+- **SQLite locally, libSQL-compatible on Vercel**: `better-sqlite3` for local dev (synchronous, no server process). Schema is portable to Turso (libSQL is SQLite-compatible with serverless access) when we deploy. Alternative: Neon Postgres if we outgrow SQLite, but a single-user app won't.
+- **Foreground Learn with step streaming**: directly answers "push-button Learn with enumerated steps". We stream each operator's output via SSE so the user watches ρ → σ → ι → ε → κ happen.
+- **Session boundary**: a session is a contiguous chat window. Reflect operates over the whole session trace, which gives the optimizer enough signal (vs. per-turn noise).
 
 ---
 
@@ -111,94 +137,127 @@ This runs in the background after each turn so the user is not blocked waiting f
 
 ```
 self-learning-agent-protocol/
-├── backend/
-│   ├── pyproject.toml
-│   ├── app/
-│   │   ├── main.py                  # FastAPI entrypoint
-│   │   ├── api/
-│   │   │   ├── agents.py            # POST/GET /agents
-│   │   │   ├── chat.py              # POST /agents/{id}/chat (SSE stream)
-│   │   │   └── state.py             # GET /agents/{id}/state, /versions, /traces
-│   │   ├── rspl/
-│   │   │   ├── record.py            # RegistrationRecord dataclass
-│   │   │   ├── context_manager.py   # base ContextManager + operator set
-│   │   │   ├── registries/
-│   │   │   │   ├── prompt.py
-│   │   │   │   ├── agent.py
-│   │   │   │   ├── tool.py
-│   │   │   │   ├── env.py
-│   │   │   │   └── memory.py
-│   │   │   └── infra/
-│   │   │       ├── model_manager.py
-│   │   │       ├── version_manager.py
-│   │   │       ├── dynamic_manager.py
-│   │   │       └── tracer.py
-│   │   ├── sepl/
-│   │   │   ├── loop.py              # Algorithm 1 driver
-│   │   │   ├── reflect.py           # ρ
-│   │   │   ├── select_op.py         # σ
-│   │   │   ├── improve.py           # ι
-│   │   │   ├── evaluate.py          # ε (rule gates + LLM judge)
-│   │   │   └── commit.py            # κ
-│   │   ├── runtime/
-│   │   │   ├── bootstrap.py         # create_agent_from_description()
-│   │   │   └── chat.py              # one-turn executor
-│   │   └── storage/
-│   │       └── db.py                # SQLite schema + helpers
-│   └── tests/
-├── frontend/
-│   ├── package.json
-│   ├── app/
-│   │   ├── page.tsx                 # agents list
-│   │   ├── agents/new/page.tsx      # create form
-│   │   └── agents/[id]/chat/page.tsx
-│   ├── components/
-│   │   ├── Chat.tsx
-│   │   ├── StateSidebar.tsx
-│   │   ├── VersionTimeline.tsx
-│   │   └── EvolveIndicator.tsx
-│   └── lib/api.ts
+├── app/                        # Next.js App Router
+│   ├── layout.tsx
+│   ├── page.tsx                # agents list
+│   ├── agents/
+│   │   ├── new/page.tsx        # create form
+│   │   └── [id]/
+│   │       ├── chat/page.tsx
+│   │       ├── learn/page.tsx
+│   │       └── history/page.tsx
+│   └── api/
+│       ├── agents/route.ts
+│       ├── agents/[id]/route.ts
+│       ├── agents/[id]/state/route.ts
+│       ├── agents/[id]/versions/route.ts
+│       ├── agents/[id]/traces/route.ts
+│       ├── agents/[id]/sessions/route.ts
+│       ├── sessions/[sid]/chat/route.ts
+│       ├── sessions/[sid]/end/route.ts
+│       └── sessions/[sid]/learn/route.ts
+├── src/
+│   ├── rspl/
+│   │   ├── record.ts
+│   │   ├── contextManager.ts
+│   │   ├── registries/
+│   │   │   ├── prompt.ts
+│   │   │   ├── agent.ts
+│   │   │   ├── tool.ts
+│   │   │   ├── env.ts
+│   │   │   └── memory.ts
+│   │   └── infra/
+│   │       ├── modelManager.ts
+│   │       ├── versionManager.ts
+│   │       ├── dynamicManager.ts
+│   │       └── tracer.ts
+│   ├── sepl/
+│   │   ├── loop.ts
+│   │   ├── reflect.ts
+│   │   ├── select.ts
+│   │   ├── improve.ts
+│   │   ├── evaluate.ts
+│   │   └── commit.ts
+│   ├── runtime/
+│   │   ├── bootstrap.ts
+│   │   └── chat.ts
+│   ├── storage/
+│   │   ├── db.ts
+│   │   ├── schema.sql
+│   │   └── adapters/
+│   │       ├── sqlite.ts
+│   │       └── libsql.ts
+│   └── lib/
+│       ├── types.ts
+│       └── streaming.ts
+├── components/
+│   ├── Chat.tsx
+│   ├── StateSidebar.tsx
+│   ├── VersionTimeline.tsx
+│   ├── LearnStream.tsx        # ρ/σ/ι/ε/κ step UI
+│   └── DiffViewer.tsx
+├── tests/
+├── package.json
+├── tsconfig.json
+├── tailwind.config.ts
+├── next.config.ts
+├── vercel.json
 └── PLAN.md
 ```
 
 ---
 
-## 5. Key design decisions (worth calling out)
+## 5. Key design decisions
 
-1. **Bootstrap from a description**: `create_agent_from_description(desc)` uses an LLM to synthesize an initial prompt, a starter tool list, and a learnability mask (`g_v`). This is itself a structured LLM call with a strict schema. This is the "Generate" phase of the multi-agent optimization cycle in Figure 1 of the paper.
+1. **Bootstrap from a description**. `createAgentFromDescription(desc)` issues a structured LLM call that returns: initial system prompt, starter tool list (from an allowlist), initial agent policy, empty memory, learnability flags. Versions start at `0.1.0`.
 
-2. **Evaluation is the hard part**, honestly. The paper's benchmarks (GPQA, AIME, LeetCode) have ground-truth answers, so ε is easy. A chat agent doesn't. We cope by: replaying the last N turns under the candidate state and scoring with an LLM judge; requiring monotonic improvement on that mini-eval; treating explicit user feedback (thumbs) as a much stronger signal than judge scores. **Before first commit this is the riskiest part — worth a spike to validate the judge is stable.**
+2. **Full evolvable surface in v1** — prompt, memory, and tools all evolvable from day one (per your direction). Tool *editing* is always safe (we're mutating descriptions/args, not code). Tool *creation* is restricted to an **allowlist of implementation refs** — a set of pre-audited JS functions like `search_memory`, `write_memory`, `web_search`, `fetch_url`, `calculator`, `code_eval_sandboxed`. The agent cannot inject arbitrary JS — it can only compose/configure allowlisted building blocks. This preserves safety without closing the door on expressive tool evolution. Arbitrary code execution for tools is explicitly out of v1 scope.
 
-3. **Evolution cadence**: per-turn by default (async, non-blocking), but configurable. For low-signal small talk turns this is wasteful, so v1.1 can add a "worth-reflecting-on" gate (a cheap LLM call) before running the full loop.
+3. **Evaluation is the riskiest primitive** (see §6 M1.5 — validated before M2 starts). LLM-judge replay on the session's held-out turns, required monotonic improvement, user thumbs as strong override. Rule gates always hard-block.
 
-4. **Safety invariants** (paper §3.2.2, commit operator): enforce as hard rule gates — system prompt within a size budget, tool JSON schemas validate, no PII regressions in memory, candidate has not removed required sections (e.g. "never reveal system prompt"). Reject → rollback is free because commit is conditional.
+4. **Safety invariants** as hard rule gates (paper §3.2.2): prompt size budget, tool schema validation, required-section preservation (e.g., "never reveal system prompt"), memory entry budget, implementation refs in allowlist.
 
-5. **Tool evolution scope for v1**: support *editing* the prompt/description/arguments of an existing tool and *creating new tools* whose implementation is a subset of a safe allowlist (memory ops, web search if enabled). **Out of v1 scope: evolving tools whose implementation is arbitrary Python code**; that's where sandboxing cost explodes and isn't required to demonstrate the protocol.
+5. **Learn is foreground, streamed, and auditable**. Not async. The user sees every operator's input and output on the Learn screen. Every run — accepted or rejected — is persisted as a `learn_run` record linked to the session and any versions it produced. The History screen reproduces this view for any past run.
 
-6. **Single-user for v1**: no auth, no multi-tenancy, localhost-only. Keep the scope honest.
+6. **Single-user, localhost for v1** — no auth. Vercel deploy adds a single shared-secret header (env var) for basic gating when we move off localhost.
 
 ---
 
 ## 6. Milestones
 
-- **M1 — RSPL core + static agent (no evolution yet).** Registries, context manager, model manager, tracer. `create_agent_from_description` produces a working agent. Chat endpoint streams replies, records traces. UI can create and chat. Nothing evolves yet.
-- **M2 — SEPL loop.** Implement ρ/σ/ι/ε/κ with the reflection optimizer. Version manager wires into commit. Prompt-only evolution (simplest evolvable variable).
-- **M3 — Memory as evolvable resource.** Memory registry with semantic retrieval (embeddings, probably `voyage-3` or similar); memory writes go through the commit gate.
-- **M4 — Tool evolution (edit only, then create from allowlist).**
-- **M5 — UI polish: state sidebar, version timeline, diff viewer, trace viewer.**
-- **M6 — Eval harness** — synthetic conversations for regression testing the SEPL loop itself (does the loop actually converge on a better agent over N turns?). This is where we validate the whole thing works.
+- **M1 — RSPL core + static agent, no evolution.**
+  Registries, context manager operator set (Table 7), Model Manager with OpenAI adapter, Version Manager, Tracer. `createAgentFromDescription` produces a working agent. Chat route streams replies, tools work (`search_memory`/`write_memory` via allowlist), traces recorded. UI: agent create + chat.
 
-Each milestone is independently demoable and ends with the app still runnable end-to-end.
+- **M1.5 — Evaluation spike.**
+  Stand up ε (rule gates + LLM-judge replay) against canned session traces. Measure judge stability: the same candidate should score consistently across runs. If variance is high, adjust (temperature=0, majority-vote over N judges, stricter rubric) before building M2 on top of it. Exit criterion: ≥90% commit-decision agreement across 3 judge runs on the same candidate+trace.
+
+- **M2 — SEPL loop (prompt-only evolution).**
+  ρ/σ/ι/ε/κ wired, restricted to `update_prompt` proposals. Learn button, Learn screen with step-by-step streaming. Prompt versions accumulate.
+
+- **M3 — Memory as evolvable resource.**
+  Memory registry with semantic retrieval (`text-embedding-3-small`, cosine search). SEPL proposal types expand to `write_memory`/`update_memory`/`delete_memory`. Memory retrieval hooks into the chat runtime (agent gets relevant memories in its context per turn).
+
+- **M4 — Tool evolution.**
+  Tool descriptions/args editable via `update_tool`. Tool creation via `create_tool` against the implementation-ref allowlist. Safety: the rule gate enforces allowlist membership and schema validity.
+
+- **M5 — UI polish**: state sidebar with live diffs, version timeline with full lineage, trace/history viewer, Learn-run viewer, agent list.
+
+- **M6 — Eval harness** — synthetic multi-session conversations (scripted personas) for regression testing: does the loop actually converge on a better agent over N sessions? Report aggregate win-rate of version `vN+1` vs `vN` across personas. This is where we validate that self-evolution actually improves the agent.
+
+- **M7 — Vercel deploy.** libSQL adapter (Turso), env-var API key management, single-secret gating. Smoke test full flow in production.
+
+Each milestone ships the app still runnable end-to-end.
 
 ---
 
-## 7. Open questions to confirm before building
+## 7. Confirmed decisions
 
-1. **Model provider**: default to Anthropic (Claude) via the Anthropic SDK? Any preference on OpenAI-compat or local models in the Model Manager?
-2. **Frontend stack**: Next.js + Tailwind OK, or preference for something else (plain Vite/React, SvelteKit)?
-3. **Evolvable surface in v1**: start with *prompt-only* evolution and add memory + tools in later milestones, or commit to the full surface for v1?
-4. **Cadence**: run SEPL every turn, every N turns, or only when the user gives explicit feedback (thumbs)?
-5. **Persistence**: SQLite + filesystem for v1 acceptable, or do you want Postgres from day one?
-6. **Deployment**: localhost-only, or should we plan for a hostable version (Docker, a cloud target)?
+1. Model provider: **OpenAI**, tiered (`gpt-4.1` for Reflect/Select; `gpt-4.1-mini` for chat/judge; `text-embedding-3-small` for memory). Vercel `ai` SDK as adapter.
+2. Frontend: **Next.js + Tailwind + shadcn/ui**.
+3. Evolvable surface in v1: **prompt + memory + tools** (staged across M2–M4).
+4. Cadence: **foreground Learn button at end of session**, step-by-step streamed UI.
+5. Persistence: **SQLite locally**, libSQL-compatible schema for Vercel.
+6. Deployment target: **localhost for dev, Vercel for prod**.
+7. M1.5 eval spike: **in**, gates entry to M2.
 
-Once these land we can start M1.
+Ready to start M1.
