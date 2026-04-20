@@ -228,8 +228,8 @@ self-learning-agent-protocol/
 - **M1 — RSPL core + static agent, no evolution.**
   Registries, context manager operator set (Table 7), Model Manager with OpenAI adapter, Version Manager, Tracer. `createAgentFromDescription` produces a working agent. Chat route streams replies, tools work (`search_memory`/`write_memory` via allowlist), traces recorded. UI: agent create + chat.
 
-- **M1.5 — Evaluation spike.**
-  Stand up ε (rule gates + LLM-judge replay) against canned session traces. Measure judge stability: the same candidate should score consistently across runs. If variance is high, adjust (temperature=0, majority-vote over N judges, stricter rubric) before building M2 on top of it. Exit criterion: ≥90% commit-decision agreement across 3 judge runs on the same candidate+trace.
+- **M1.5 — Evaluation spike.** ✅ **Done.**
+  Stood up ε (rule gates + LLM-judge replay) against canned session traces. Initial pairwise judge at temperature=0 hit 67% commit-decision agreement — failing. Applied three remediations: (a) N=3 votes per turn with alternating A/B positions and majority-vote collapse, (b) a stricter rubric biasing toward "tie" on near-equivalent replies, and (c) dimension-wise monotonic commit rule (commit iff strict improvement on ≥1 dimension AND no regression on any dimension) instead of pooled raw scores. Result: **100% commit-decision agreement across 3 runs** on `recipe_coach_v1`. Exit criterion met. See `src/sepl/evaluate.ts`, `src/sepl/fixtures.ts`, `scripts/eval-spike.ts` (`npm run eval-spike`).
 
 - **M2 — SEPL loop (prompt-only evolution).**
   ρ/σ/ι/ε/κ wired, restricted to `update_prompt` proposals. Learn button, Learn screen with step-by-step streaming. Prompt versions accumulate.

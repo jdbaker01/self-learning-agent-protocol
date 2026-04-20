@@ -42,3 +42,6 @@ tsconfig.tsbuildinfo
 data/
 *.db
 *.sqlite
+
+# Claude Code per-user settings (keep launch.json committed)
+.claude/settings.local.json
