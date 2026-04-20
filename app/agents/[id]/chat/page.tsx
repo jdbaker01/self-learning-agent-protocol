@@ -14,5 +14,14 @@ export default async function ChatPage({
   const agent = getAgent(id);
   if (!agent) notFound();
   const { sessionId } = createSession(id);
-  return <ChatView agentId={id} agentName={agent.name} initialSessionId={sessionId} />;
+  // key={sessionId} forces a full remount after router.refresh() on End Session,
+  // so useChat picks up the new transport and messages reset cleanly.
+  return (
+    <ChatView
+      key={sessionId}
+      agentId={id}
+      agentName={agent.name}
+      initialSessionId={sessionId}
+    />
+  );
 }
