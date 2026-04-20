@@ -58,6 +58,21 @@ API routes touching the database must `export const runtime = "nodejs"`. The Edg
 
 Immediately after creating a new remote, `git push` can 404 for a second or two. Either use `gh repo create --push` (gh handles the retry) or `sleep 3` before the first push.
 
+## React StrictMode double-fires effects
+
+React 19 dev mode intentionally mounts every component twice. `useState` + `setState` as a "have we started?" guard is not synchronous — the second effect invocation still sees the old value and fires again.
+
+For a side-effect that must run exactly once on mount (e.g. kicking off a streaming POST to `/api/.../learn`), use `useRef(false)`:
+
+```ts
+const startedRef = useRef(false);
+// inside the effect:
+if (startedRef.current) return;
+startedRef.current = true;
+```
+
+Symptom we saw: hitting End & Learn once fired two parallel SEPL pipelines against the same session and wrote two `learn_runs` rows. Both completed, both were correctly rejected, but each burned ~30s of judge API calls.
+
 ## Schema columns you might forget
 
 - `resources.entity_type` (not `entity`).

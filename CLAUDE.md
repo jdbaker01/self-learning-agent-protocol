@@ -21,4 +21,5 @@ These are mandatory. Do not skip.
 
 - M1 ✅ RSPL core + static chat agent
 - M1.5 ✅ Evaluation spike — 100% commit-decision agreement
-- M2 🔜 SEPL loop (prompt-only evolution + Learn button + streamed step UI)
+- M2 ✅ SEPL loop (prompt-only) + Learn button + streamed step UI
+- M3 🔜 Memory as evolvable resource (semantic retrieval + memory proposals)

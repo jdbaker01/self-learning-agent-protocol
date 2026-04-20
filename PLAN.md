@@ -231,8 +231,8 @@ self-learning-agent-protocol/
 - **M1.5 — Evaluation spike.** ✅ **Done.**
   Stood up ε (rule gates + LLM-judge replay) against canned session traces. Initial pairwise judge at temperature=0 hit 67% commit-decision agreement — failing. Applied three remediations: (a) N=3 votes per turn with alternating A/B positions and majority-vote collapse, (b) a stricter rubric biasing toward "tie" on near-equivalent replies, and (c) dimension-wise monotonic commit rule (commit iff strict improvement on ≥1 dimension AND no regression on any dimension) instead of pooled raw scores. Result: **100% commit-decision agreement across 3 runs** on `recipe_coach_v1`. Exit criterion met. See `src/sepl/evaluate.ts`, `src/sepl/fixtures.ts`, `scripts/eval-spike.ts` (`npm run eval-spike`).
 
-- **M2 — SEPL loop (prompt-only evolution).**
-  ρ/σ/ι/ε/κ wired, restricted to `update_prompt` proposals. Learn button, Learn screen with step-by-step streaming. Prompt versions accumulate.
+- **M2 — SEPL loop (prompt-only evolution).** ✅ **Done.**
+  ρ/σ/ι/ε/κ wired, restricted to `update_prompt` proposals. End-and-learn button on chat view navigates to the Learn page, which opens an SSE stream from `POST /api/sessions/[sid]/learn` and renders each operator's output live (hypotheses, proposal + rationale, before/after diff, evaluate progress, commit decision). Every run persists to `learn_runs` with full audit (hypotheses, proposals, evaluation, commit decisions). Prompt versions bump via `PromptRegistry.updateText(..., "sepl:<learn_run_id>")` on accept; candidates that fail rule gates or aren't strict improvements are discarded. Verified end-to-end in preview: 2 hypotheses → coherent proposal → judge=equivalent → correctly rejected.
 
 - **M3 — Memory as evolvable resource.**
   Memory registry with semantic retrieval (`text-embedding-3-small`, cosine search). SEPL proposal types expand to `write_memory`/`update_memory`/`delete_memory`. Memory retrieval hooks into the chat runtime (agent gets relevant memories in its context per turn).

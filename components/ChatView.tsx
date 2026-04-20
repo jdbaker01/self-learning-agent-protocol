@@ -72,9 +72,7 @@ export function ChatView({ agentId, agentName, initialSessionId }: Props) {
   async function onEndSession() {
     setEnding(true);
     await fetch(`/api/sessions/${sessionId}/end`, { method: "POST" });
-    // For M1 there's no Learn yet — reload to get a fresh session from the page.
-    router.refresh();
-    setEnding(false);
+    router.push(`/agents/${agentId}/learn/${sessionId}`);
   }
 
   return (
@@ -90,10 +88,10 @@ export function ChatView({ agentId, agentName, initialSessionId }: Props) {
           <button
             onClick={onEndSession}
             disabled={ending}
-            className="text-sm rounded-md border border-neutral-300 px-3 py-1.5 hover:bg-neutral-50 disabled:opacity-50"
-            title="End the current session and start a new one. Learn (SEPL) wires in here in M2."
+            className="text-sm rounded-md bg-neutral-900 text-white px-3 py-1.5 hover:bg-neutral-800 disabled:opacity-50"
+            title="End the session and run the SEPL loop on the transcript."
           >
-            {ending ? "Ending…" : "End session"}
+            {ending ? "Ending…" : "End & learn"}
           </button>
         </div>
 
