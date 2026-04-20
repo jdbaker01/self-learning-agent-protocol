@@ -2,6 +2,7 @@
 
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { UIMessage } from "ai";
 import { StateSidebar, type AgentState } from "./StateSidebar";
@@ -9,10 +10,11 @@ import { StateSidebar, type AgentState } from "./StateSidebar";
 interface Props {
   agentId: string;
   agentName: string;
+  initialSessionId: string;
 }
 
-export function ChatView({ agentId, agentName }: Props) {
-  const [sessionId, setSessionId] = useState<string | null>(null);
+export function ChatView({ agentId, agentName, initialSessionId }: Props) {
+  const [sessionId, setSessionId] = useState<string>(initialSessionId);
   const [state, setState] = useState<AgentState | null>(null);
   const [ending, setEnding] = useState(false);
   const [input, setInput] = useState("");
@@ -30,23 +32,7 @@ export function ChatView({ agentId, agentName }: Props) {
     refreshState();
   }, [refreshState]);
 
-  // Lazily create a session on first render.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const res = await fetch(`/api/agents/${agentId}/sessions`, { method: "POST" });
-      if (res.ok && !cancelled) {
-        const { sessionId } = await res.json();
-        setSessionId(sessionId);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [agentId]);
-
   const transport = useMemo(() => {
-    if (!sessionId) return null;
     return new DefaultChatTransport({
       api: `/api/sessions/${sessionId}/chat`,
       prepareSendMessagesRequest: ({ messages }) => {
@@ -63,9 +49,8 @@ export function ChatView({ agentId, agentName }: Props) {
     });
   }, [sessionId]);
 
-  const { messages, sendMessage, status } = useChat({
-    transport: transport ?? new DefaultChatTransport({ api: "/noop" }),
-  });
+  const { messages, sendMessage, status } = useChat({ transport });
+  const router = useRouter();
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -78,22 +63,17 @@ export function ChatView({ agentId, agentName }: Props) {
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!sessionId || !input.trim() || status !== "ready") return;
+    if (!input.trim() || status !== "ready") return;
     const text = input.trim();
     setInput("");
     await sendMessage({ text });
   }
 
   async function onEndSession() {
-    if (!sessionId) return;
     setEnding(true);
     await fetch(`/api/sessions/${sessionId}/end`, { method: "POST" });
-    // For M1 there's no Learn yet — just start a fresh session.
-    const res = await fetch(`/api/agents/${agentId}/sessions`, { method: "POST" });
-    if (res.ok) {
-      const { sessionId: newId } = await res.json();
-      setSessionId(newId);
-    }
+    // For M1 there's no Learn yet — reload to get a fresh session from the page.
+    router.refresh();
     setEnding(false);
   }
 
@@ -104,12 +84,12 @@ export function ChatView({ agentId, agentName }: Props) {
           <div>
             <div className="font-medium">{agentName}</div>
             <div className="text-xs text-neutral-500 font-mono">
-              session: {sessionId ?? "…"}
+              session: {sessionId}
             </div>
           </div>
           <button
             onClick={onEndSession}
-            disabled={!sessionId || ending}
+            disabled={ending}
             className="text-sm rounded-md border border-neutral-300 px-3 py-1.5 hover:bg-neutral-50 disabled:opacity-50"
             title="End the current session and start a new one. Learn (SEPL) wires in here in M2."
           >
@@ -133,13 +113,13 @@ export function ChatView({ agentId, agentName }: Props) {
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder={sessionId ? "Message…" : "Starting session…"}
-            disabled={!sessionId || status === "submitted" || status === "streaming"}
+            placeholder="Message…"
+            disabled={status === "submitted" || status === "streaming"}
             className="flex-1 rounded-md border border-neutral-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
           />
           <button
             type="submit"
-            disabled={!sessionId || !input.trim() || status !== "ready"}
+            disabled={!input.trim() || status !== "ready"}
             className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
           >
             {status === "streaming" || status === "submitted" ? "…" : "Send"}
