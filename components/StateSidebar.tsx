@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 export interface AgentState {
   agent: { id: string; name: string; description: string };
   prompt: { version: string; text: string } | null;
@@ -25,7 +27,15 @@ export interface AgentState {
   }>;
 }
 
-export function StateSidebar({ state, onRefresh }: { state: AgentState | null; onRefresh: () => void }) {
+export function StateSidebar({
+  state,
+  onRefresh,
+  agentId,
+}: {
+  state: AgentState | null;
+  onRefresh: () => void;
+  agentId: string;
+}) {
   if (!state) {
     return (
       <aside className="rounded-lg border border-neutral-200 bg-white p-4 text-sm text-neutral-500">
@@ -99,16 +109,27 @@ export function StateSidebar({ state, onRefresh }: { state: AgentState | null; o
 
       <Section label={`Version timeline (${state.lineage.length})`}>
         <ul className="text-xs space-y-0.5 max-h-60 overflow-auto">
-          {state.lineage.map((l, i) => (
-            <li key={i} className={l.isHead ? "font-medium" : "text-neutral-600"}>
-              <span className="font-mono">{l.entityType}:{l.name}</span>
-              {" "}→ v{l.version}{" "}
-              <span className="text-[10px] text-neutral-400">
-                ({l.createdBy})
-              </span>
-              {l.isHead && <span className="ml-1 text-[10px] text-blue-600">HEAD</span>}
-            </li>
-          ))}
+          {state.lineage.map((l, i) => {
+            const seplId = l.createdBy.startsWith("sepl:") ? l.createdBy.slice(5) : null;
+            return (
+              <li key={i} className={l.isHead ? "font-medium" : "text-neutral-600"}>
+                <span className="font-mono">{l.entityType}:{l.name}</span>
+                {" "}→ v{l.version}{" "}
+                {seplId ? (
+                  <Link
+                    href={`/agents/${agentId}/history/learn/${seplId}`}
+                    className="text-[10px] text-emerald-700 hover:underline font-mono"
+                    title="View the SEPL run that produced this version"
+                  >
+                    (sepl:{seplId.slice(0, 8)}…)
+                  </Link>
+                ) : (
+                  <span className="text-[10px] text-neutral-400">({l.createdBy})</span>
+                )}
+                {l.isHead && <span className="ml-1 text-[10px] text-blue-600">HEAD</span>}
+              </li>
+            );
+          })}
         </ul>
       </Section>
     </aside>

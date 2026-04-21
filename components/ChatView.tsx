@@ -2,6 +2,7 @@
 
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { UIMessage } from "ai";
@@ -85,14 +86,23 @@ export function ChatView({ agentId, agentName, initialSessionId }: Props) {
               session: {sessionId}
             </div>
           </div>
-          <button
-            onClick={onEndSession}
-            disabled={ending}
-            className="text-sm rounded-md bg-neutral-900 text-white px-3 py-1.5 hover:bg-neutral-800 disabled:opacity-50"
-            title="End the session and run the SEPL loop on the transcript."
-          >
-            {ending ? "Ending…" : "End & learn"}
-          </button>
+          <div className="flex items-center gap-2">
+            <Link
+              href={`/agents/${agentId}/history`}
+              className="text-sm rounded-md border border-neutral-300 px-3 py-1.5 hover:bg-neutral-50"
+              title="Browse prior sessions and learn runs."
+            >
+              History
+            </Link>
+            <button
+              onClick={onEndSession}
+              disabled={ending}
+              className="text-sm rounded-md bg-neutral-900 text-white px-3 py-1.5 hover:bg-neutral-800 disabled:opacity-50"
+              title="End the session and run the SEPL loop on the transcript."
+            >
+              {ending ? "Ending…" : "End & learn"}
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
@@ -125,7 +135,7 @@ export function ChatView({ agentId, agentName, initialSessionId }: Props) {
         </form>
       </div>
 
-      <StateSidebar state={state} onRefresh={refreshState} />
+      <StateSidebar state={state} onRefresh={refreshState} agentId={agentId} />
     </div>
   );
 }

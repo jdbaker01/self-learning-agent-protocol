@@ -87,6 +87,60 @@ export function listAgents() {
     .all();
 }
 
+export interface AgentStats {
+  id: string;
+  name: string;
+  description: string;
+  created_at: string;
+  promptVersion: string | null;
+  sessions: number;
+  learns: number;
+  memories: number;
+  tools: number;
+}
+
+export function listAgentsWithStats(): AgentStats[] {
+  const db = getDb();
+  const rows = db
+    .prepare<[], {
+      id: string;
+      name: string;
+      description: string;
+      created_at: string;
+      prompt_version: string | null;
+      sessions: number;
+      learns: number;
+      memories: number;
+      tools: number;
+    }>(
+      `SELECT
+         a.id, a.name, a.description, a.created_at,
+         (SELECT rv.version FROM resources r
+            JOIN resource_head h ON h.resource_id = r.id
+            JOIN resource_versions rv ON rv.id = h.version_id
+            WHERE r.agent_id = a.id AND r.entity_type = 'prompt' AND r.name = 'system'
+          ) AS prompt_version,
+         (SELECT COUNT(*) FROM sessions s WHERE s.agent_id = a.id) AS sessions,
+         (SELECT COUNT(*) FROM learn_runs lr WHERE lr.agent_id = a.id AND lr.status = 'completed') AS learns,
+         (SELECT COUNT(*) FROM resources r WHERE r.agent_id = a.id AND r.entity_type = 'memory') AS memories,
+         (SELECT COUNT(*) FROM resources r WHERE r.agent_id = a.id AND r.entity_type = 'tool') AS tools
+       FROM agents a
+       ORDER BY a.created_at DESC`,
+    )
+    .all();
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    description: r.description,
+    created_at: r.created_at,
+    promptVersion: r.prompt_version,
+    sessions: r.sessions,
+    learns: r.learns,
+    memories: r.memories,
+    tools: r.tools,
+  }));
+}
+
 export function getAgent(agentId: string) {
   const db = getDb();
   return db
