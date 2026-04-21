@@ -8,7 +8,8 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "lint": "next lint",
-    "eval-spike": "tsx scripts/eval-spike.ts"
+    "eval-spike": "tsx scripts/eval-spike.ts",
+    "sim": "tsx scripts/sim.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "3.0.53",

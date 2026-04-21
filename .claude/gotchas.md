@@ -58,6 +58,10 @@ API routes touching the database must `export const runtime = "nodejs"`. The Edg
 
 Immediately after creating a new remote, `git push` can 404 for a second or two. Either use `gh repo create --push` (gh handles the retry) or `sleep 3` before the first push.
 
+## npm scripts buffer stdout when piped
+
+`npm run <script> 2>&1 | tail -N` or redirect-to-file will look *empty* until the script exits, because Node detects a pipe and switches to block-buffered stdout. The script IS running — check `ps aux` or query the DB for progress. For live tailing, don't pipe; write a small poll against DB state (turn count, learn_runs count) instead.
+
 ## OpenAI strict JSON requires every property in `required`
 
 When using `generateObject({ model: ModelManager.forTier(...) })` with zod, OpenAI's structured-output mode enforces **strict schema**: every key in `properties` must also appear in `required`. zod's `.default([])` / `.optional()` produce optional keys and trigger:

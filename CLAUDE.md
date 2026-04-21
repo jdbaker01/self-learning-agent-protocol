@@ -25,4 +25,5 @@ These are mandatory. Do not skip.
 - M3 ✅ Memory as evolvable resource — semantic retrieval + write/update/delete proposals
 - M4 ✅ Tool evolution — update_tool / create_tool from allowlist
 - M5 ✅ UI polish — agent-list stats, history index, session viewer, learn-run archive
-- M6 🔜 Synthetic multi-session eval harness
+- M6 ✅ Multi-session eval harness — `npm run sim` across scripted personas
+- M7 🔜 Vercel deploy (libSQL / Turso adapter, single-secret gating)
