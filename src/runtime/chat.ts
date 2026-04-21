@@ -133,7 +133,12 @@ export async function runChatTurn(input: ChatTurnInput) {
     }),
   );
 
-  // Persist the turn row up-front so we have an id to attach the trace to.
+  // Read history FIRST so `prior` is genuinely prior turns (completed user +
+  // assistant pairs). Then persist the current turn row. Reversing this order
+  // was the M1 bug where `.slice(0, -0)` silently evaluated to `[]` and every
+  // turn went to the model with no context.
+  const prior = getSessionHistory(input.sessionId);
+
   const turnId = `trn_${nanoid(12)}`;
   const turnIdx = withTx((db) => {
     const { cnt } = db
@@ -144,10 +149,6 @@ export async function runChatTurn(input: ChatTurnInput) {
     ).run(turnId, input.sessionId, cnt, input.userMessage);
     return cnt;
   });
-
-  const history = getSessionHistory(input.sessionId).slice(0, -0); // current turn not yet appended
-  // drop the turn we just inserted (content empty)
-  const prior = history;
 
   const memoryBlock =
     memoryHits.length > 0

@@ -58,6 +58,12 @@ API routes touching the database must `export const runtime = "nodejs"`. The Edg
 
 Immediately after creating a new remote, `git push` can 404 for a second or two. Either use `gh repo create --push` (gh handles the retry) or `sleep 3` before the first push.
 
+## `.slice(0, -0)` returns `[]`
+
+`-0 === 0` in JS, so `arr.slice(0, -0)` evaluates to `arr.slice(0, 0)` — an empty array. An earlier version of `runChatTurn` used this to "trim the just-inserted turn" from the history it had read, and silently sent every turn to the model with no prior context for six milestones. Symptom: agent forgot what the user said one turn ago ("Mascarpone" reply → "What is it you want me to do?").
+
+Fix shape: read history **before** mutating, so the trim isn't needed. If you ever need to drop the last element, use `slice(0, -1)` and write a test with one known element to prove it returns `[]` not `[x]`.
+
 ## npm scripts buffer stdout when piped
 
 `npm run <script> 2>&1 | tail -N` or redirect-to-file will look *empty* until the script exits, because Node detects a pipe and switches to block-buffered stdout. The script IS running — check `ps aux` or query the DB for progress. For live tailing, don't pipe; write a small poll against DB state (turn count, learn_runs count) instead.
