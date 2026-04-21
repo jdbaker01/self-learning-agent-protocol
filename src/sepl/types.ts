@@ -4,7 +4,7 @@
 export interface Hypothesis {
   id: string;
   /** Which evolvable surface the hypothesis implicates. */
-  area: "prompt" | "memory";
+  area: "prompt" | "memory" | "tool";
   /** One-sentence statement of the failure mode or improvement opportunity. */
   issue: string;
   /** Reference to the turn + short quote that justifies the hypothesis. */
@@ -53,12 +53,42 @@ export type MemoryProposal =
   | UpdateMemoryProposal
   | DeleteMemoryProposal;
 
-export type Proposal = UpdatePromptProposal | MemoryProposal;
+export interface UpdateToolProposal {
+  type: "update_tool";
+  /** Resource id of the tool to modify. */
+  toolId: string;
+  /** Tool name as shown in the trace (for UI context). */
+  toolName: string;
+  /** New description; null = leave unchanged. */
+  description: string | null;
+  /** New JSON Schema (stringified then parsed); null = leave unchanged. */
+  argsSchemaJson: string | null;
+  rationale: string;
+  addresses: string[];
+}
+
+export interface CreateToolProposal {
+  type: "create_tool";
+  /** Unique tool name to register under this agent. */
+  name: string;
+  /** Allowlist key — must exist in tool.ts ALLOWLIST. */
+  implementationRef: string;
+  description: string;
+  /** JSON Schema for the tool's args (stringified; parsed at commit time). */
+  argsSchemaJson: string;
+  rationale: string;
+  addresses: string[];
+}
+
+export type ToolProposal = UpdateToolProposal | CreateToolProposal;
+
+export type Proposal = UpdatePromptProposal | MemoryProposal | ToolProposal;
 
 /** The full bundle a single Learn run may commit (or reject) as a unit. */
 export interface ProposalBundle {
   updatePrompt?: UpdatePromptProposal;
   memoryOps: MemoryProposal[];
+  toolOps: ToolProposal[];
 }
 
 /** Streamed to the Learn UI — one event per observable step. */
@@ -78,6 +108,15 @@ export type LearnEvent =
       memoryId?: string;
       before?: string;
       after?: string;
+    }
+  | {
+      type: "improve.toolOp";
+      op: "create" | "update";
+      toolId?: string;
+      toolName: string;
+      implementationRef?: string;
+      before?: { description: string; argsSchemaJson: string };
+      after: { description: string; argsSchemaJson: string };
     }
   | { type: "improve.end" }
   | { type: "evaluate.begin" }

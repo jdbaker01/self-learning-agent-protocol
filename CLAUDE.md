@@ -23,4 +23,5 @@ These are mandatory. Do not skip.
 - M1.5 ✅ Evaluation spike — 100% commit-decision agreement
 - M2 ✅ SEPL loop (prompt-only) + Learn button + streamed step UI
 - M3 ✅ Memory as evolvable resource — semantic retrieval + write/update/delete proposals
-- M4 🔜 Tool evolution (edit + create from allowlist)
+- M4 ✅ Tool evolution — update_tool / create_tool from allowlist
+- M5 🔜 UI polish: state sidebar live diffs, lineage viewer, history

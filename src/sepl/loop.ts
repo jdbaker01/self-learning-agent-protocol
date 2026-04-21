@@ -5,8 +5,7 @@ import { nanoid } from "nanoid";
 import { getDb } from "@/src/storage/db";
 import { PromptRegistry } from "@/src/rspl/registries/prompt";
 import { AgentPolicyRegistry } from "@/src/rspl/registries/agent";
-import { ToolRegistry, type ToolImpl } from "@/src/rspl/registries/tool";
-import type { AllowlistKey } from "@/src/rspl/registries/tool";
+import { ToolRegistry, type ToolImpl, ALLOWLIST_KEYS } from "@/src/rspl/registries/tool";
 import { MemoryRegistry, type MemoryImpl } from "@/src/rspl/registries/memory";
 import { reflect } from "./reflect";
 import { select } from "./select";
@@ -63,16 +62,42 @@ function loadMemories(agentId: string) {
   });
 }
 
+interface BaselineTool {
+  id: string;
+  name: string;
+  description: string;
+  implementationRef: string;
+  argsSchema: Record<string, unknown>;
+}
+
+function loadBaselineTools(agentId: string): BaselineTool[] {
+  return ToolRegistry.listTools(agentId).map((t) => {
+    const impl = t.impl as ToolImpl;
+    return {
+      id: t.id,
+      name: t.name,
+      description: t.description,
+      implementationRef: impl.implementationRef,
+      argsSchema: impl.argsSchema,
+    };
+  });
+}
+
 function loadEvoState(
   agentId: string,
   memories: Array<{ id: string; content: string; tags: string[] }>,
+  tools: BaselineTool[],
 ): EvoState {
   const policy = AgentPolicyRegistry.getPolicy(agentId);
-  const tools = ToolRegistry.listTools(agentId);
   return {
     systemPrompt: PromptRegistry.getSystemPrompt(agentId),
     replyStyle: policy.replyStyle,
-    toolRefs: tools.map((t) => (t.impl as ToolImpl).implementationRef as AllowlistKey),
+    tools: tools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      implementationRef: t.implementationRef,
+      argsSchema: t.argsSchema,
+    })),
     memories: memories.map((m) => ({ content: m.content, tags: m.tags })),
   };
 }
@@ -137,7 +162,8 @@ export async function* runLearnLoop(input: LearnInput): AsyncGenerator<LearnEven
   }
 
   const baselineMemories = loadMemories(agentId);
-  const baseline = loadEvoState(agentId, baselineMemories);
+  const baselineTools = loadBaselineTools(agentId);
+  const baseline = loadEvoState(agentId, baselineMemories, baselineTools);
   const learnRunId = insertLearnRun(agentId, input.sessionId);
   yield { type: "start", learnRunId, sessionId: input.sessionId, agentId };
 
@@ -147,6 +173,8 @@ export async function* runLearnLoop(input: LearnInput): AsyncGenerator<LearnEven
     const hypotheses = await reflect({
       systemPrompt: baseline.systemPrompt,
       memories: baselineMemories,
+      tools: baselineTools,
+      allowlistKeys: ALLOWLIST_KEYS,
       trace: trace.turns,
     });
     for (const h of hypotheses) yield { type: "reflect.hypothesis", hypothesis: h };
@@ -170,12 +198,17 @@ export async function* runLearnLoop(input: LearnInput): AsyncGenerator<LearnEven
     const bundle = await select({
       systemPrompt: baseline.systemPrompt,
       memories: baselineMemories,
+      tools: baselineTools,
+      allowlistKeys: ALLOWLIST_KEYS,
       hypotheses,
     });
     if (bundle.updatePrompt) {
       yield { type: "select.proposal", proposal: bundle.updatePrompt };
     }
     for (const op of bundle.memoryOps) {
+      yield { type: "select.proposal", proposal: op };
+    }
+    for (const op of bundle.toolOps) {
       yield { type: "select.proposal", proposal: op };
     }
     yield {
@@ -187,10 +220,14 @@ export async function* runLearnLoop(input: LearnInput): AsyncGenerator<LearnEven
       proposals: [
         ...(bundle.updatePrompt ? [bundle.updatePrompt] : []),
         ...bundle.memoryOps,
+        ...bundle.toolOps,
       ],
     });
 
-    const hasChanges = !!bundle.updatePrompt || bundle.memoryOps.length > 0;
+    const hasChanges =
+      !!bundle.updatePrompt ||
+      bundle.memoryOps.length > 0 ||
+      bundle.toolOps.length > 0;
     if (!hasChanges) {
       yield {
         type: "commit.decision",
@@ -205,7 +242,7 @@ export async function* runLearnLoop(input: LearnInput): AsyncGenerator<LearnEven
 
     // --- Improve ------------------------------------------------------------
     yield { type: "improve.begin" };
-    const preview = improve(baseline, bundle, baselineMemories);
+    const preview = improve(baseline, bundle, baselineMemories, baselineTools);
     if (bundle.updatePrompt) {
       yield {
         type: "improve.promptDiff",
@@ -218,6 +255,17 @@ export async function* runLearnLoop(input: LearnInput): AsyncGenerator<LearnEven
         type: "improve.memoryOp",
         op: ch.op,
         memoryId: ch.memoryId,
+        before: ch.before,
+        after: ch.after,
+      };
+    }
+    for (const ch of preview.toolChanges) {
+      yield {
+        type: "improve.toolOp",
+        op: ch.op,
+        toolId: ch.toolId,
+        toolName: ch.toolName,
+        implementationRef: ch.implementationRef,
         before: ch.before,
         after: ch.after,
       };
@@ -239,28 +287,45 @@ export async function* runLearnLoop(input: LearnInput): AsyncGenerator<LearnEven
     const evalAggregate =
       evalResult.judge?.aggregate ??
       (evalResult.ruleGates.passed ? "equivalent" : "rule_gate_fail");
+    // Tool-only bundles can't manifest their value in prompt-only replay (the
+    // candidate and baseline produce the same text when neither actually calls
+    // the new/updated tool). For that narrow case, fall back to "rule gates
+    // pass + no regression" instead of requiring strict judge improvement.
+    const toolOnly =
+      !bundle.updatePrompt &&
+      bundle.memoryOps.length === 0 &&
+      bundle.toolOps.length > 0;
+    const finalCommit =
+      evalResult.commit ||
+      (toolOnly && evalResult.ruleGates.passed && evalAggregate !== "baseline_better");
+    const finalReason =
+      finalCommit && !evalResult.commit
+        ? `${evalResult.reason} — tool-only bundle, rule gates sufficient`
+        : evalResult.reason;
     yield {
       type: "evaluate.complete",
       ruleGatesPassed: evalResult.ruleGates.passed,
       aggregate: evalAggregate,
-      commit: evalResult.commit,
-      reason: evalResult.reason,
+      commit: finalCommit,
+      reason: finalReason,
     };
-    persistLearnRun(learnRunId, { evaluation: evalResult });
+    persistLearnRun(learnRunId, {
+      evaluation: { ...evalResult, commit: finalCommit, reason: finalReason },
+    });
 
     // --- Commit -------------------------------------------------------------
     yield { type: "commit.begin" };
     const commitResult = await commit({
       agentId,
       learnRunId,
-      commit: evalResult.commit,
+      commit: finalCommit,
       bundle,
     });
     yield {
       type: "commit.decision",
       committed: commitResult.committed,
       newVersion: commitResult.promptVersion,
-      reason: evalResult.reason,
+      reason: finalReason,
     };
     persistLearnRun(learnRunId, {
       status: "completed",
@@ -269,7 +334,8 @@ export async function* runLearnLoop(input: LearnInput): AsyncGenerator<LearnEven
           committed: commitResult.committed,
           promptVersion: commitResult.promptVersion,
           memoryOps: commitResult.memoryOps,
-          reason: evalResult.reason,
+          toolOps: commitResult.toolOps,
+          reason: finalReason,
         },
       ],
     });

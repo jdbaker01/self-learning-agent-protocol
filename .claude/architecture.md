@@ -46,7 +46,9 @@ Each memory is a resource (`entity_type='memory'`) with `impl: { content, tags }
 
 Chat runtime (`src/runtime/chat.ts`) auto-retrieves top-5 memories above cosine ≥ 0.3 on every user message and injects them into the system prompt as a `# Retrieved memories` block. The `search_memory` tool is still available for explicit lookups and returns scores.
 
-SEPL `ProposalBundle` (`src/sepl/types.ts`): optional `update_prompt` + array of `{ write_memory | update_memory | delete_memory }`. Commit applies the whole bundle atomically with `createdBy="sepl:<learn_run_id>"`.
+SEPL `ProposalBundle` (`src/sepl/types.ts`): optional `update_prompt` + `memoryOps[]` + `toolOps[]`. Memory ops are `write_memory | update_memory | delete_memory`. Tool ops are `update_tool` (mutate description / argsSchema of an existing tool — implementation ref is immutable) or `create_tool` (install a new tool against an allowlist key with a unique name + args schema). Commit applies the whole bundle atomically with `createdBy="sepl:<learn_run_id>"`.
+
+**Tool-only commit override** (`src/sepl/loop.ts`): prompt-only judge replay can't measure tool-change value (same reply text in both branches), so a bundle consisting solely of tool ops commits on rule-gates + non-regression rather than strict judge improvement. Bundles with any prompt or memory op still go through the full dimension-wise monotonic rule.
 
 ## Evaluation (ε)
 

@@ -7,6 +7,7 @@ import type {
   Hypothesis,
   UpdatePromptProposal,
   MemoryProposal,
+  ToolProposal,
 } from "@/src/sepl/types";
 
 interface Props {
@@ -38,6 +39,15 @@ interface MemoryOpUi {
   after?: string;
 }
 
+interface ToolOpUi {
+  op: "create" | "update";
+  toolId?: string;
+  toolName: string;
+  implementationRef?: string;
+  before?: { description: string; argsSchemaJson: string };
+  after: { description: string; argsSchemaJson: string };
+}
+
 export function LearnStream({ agentId, agentName, sessionId, sessionStatus }: Props) {
   // useRef, not useState: the ref mutation is synchronous so React
   // StrictMode's dev-only double-invoke of effects can't fire /learn twice.
@@ -47,8 +57,10 @@ export function LearnStream({ agentId, agentName, sessionId, sessionStatus }: Pr
   const [hypotheses, setHypotheses] = useState<Hypothesis[]>([]);
   const [promptProposal, setPromptProposal] = useState<UpdatePromptProposal | null>(null);
   const [memoryProposals, setMemoryProposals] = useState<MemoryProposal[]>([]);
+  const [toolProposals, setToolProposals] = useState<ToolProposal[]>([]);
   const [diff, setDiff] = useState<{ before: string; after: string } | null>(null);
   const [memoryOps, setMemoryOps] = useState<MemoryOpUi[]>([]);
+  const [toolOps, setToolOps] = useState<ToolOpUi[]>([]);
   const [evaluateNotes, setEvaluateNotes] = useState<string[]>([]);
   const [evalSummary, setEvalSummary] = useState<EvalSummary | null>(null);
   const [commitSummary, setCommitSummary] = useState<CommitSummary | null>(null);
@@ -103,6 +115,8 @@ export function LearnStream({ agentId, agentName, sessionId, sessionStatus }: Pr
       case "select.proposal":
         if (evt.proposal.type === "update_prompt") {
           setPromptProposal(evt.proposal);
+        } else if (evt.proposal.type === "update_tool" || evt.proposal.type === "create_tool") {
+          setToolProposals((t) => [...t, evt.proposal as ToolProposal]);
         } else {
           setMemoryProposals((m) => [...m, evt.proposal as MemoryProposal]);
         }
@@ -117,6 +131,19 @@ export function LearnStream({ agentId, agentName, sessionId, sessionStatus }: Pr
         setMemoryOps((m) => [
           ...m,
           { op: evt.op, memoryId: evt.memoryId, before: evt.before, after: evt.after },
+        ]);
+        break;
+      case "improve.toolOp":
+        setToolOps((t) => [
+          ...t,
+          {
+            op: evt.op,
+            toolId: evt.toolId,
+            toolName: evt.toolName,
+            implementationRef: evt.implementationRef,
+            before: evt.before,
+            after: evt.after,
+          },
         ]);
         break;
       case "evaluate.begin":
@@ -160,7 +187,8 @@ export function LearnStream({ agentId, agentName, sessionId, sessionStatus }: Pr
   }, [sessionStatus, start]);
 
   const alreadyLearned = sessionStatus === "learned";
-  const hasAnyProposal = promptProposal !== null || memoryProposals.length > 0;
+  const hasAnyProposal =
+    promptProposal !== null || memoryProposals.length > 0 || toolProposals.length > 0;
 
   return (
     <div className="max-w-3xl mx-auto space-y-5">
@@ -225,14 +253,17 @@ export function LearnStream({ agentId, agentName, sessionId, sessionStatus }: Pr
         {memoryProposals.map((p, i) => (
           <MemoryProposalCard key={i} p={p} />
         ))}
+        {toolProposals.map((p, i) => (
+          <ToolProposalCard key={`tool-${i}`} p={p} />
+        ))}
       </StepCard>
 
       <StepCard
         n={3}
         title="Improve"
-        subtitle="Build the candidate V_evo (prompt diff + memory ops)"
+        subtitle="Build the candidate V_evo (prompt diff + memory + tool ops)"
         active={stage === "improve"}
-        done={(diff !== null || memoryOps.length > 0) && stage !== "improve"}
+        done={(diff !== null || memoryOps.length > 0 || toolOps.length > 0) && stage !== "improve"}
       >
         {diff && <DiffView before={diff.before} after={diff.after} />}
         {memoryOps.length > 0 && (
@@ -242,7 +273,16 @@ export function LearnStream({ agentId, agentName, sessionId, sessionStatus }: Pr
             ))}
           </div>
         )}
-        {!diff && memoryOps.length === 0 && <div className="text-sm text-neutral-500">—</div>}
+        {toolOps.length > 0 && (
+          <div className="space-y-2">
+            {toolOps.map((op, i) => (
+              <ToolOpCard key={`tool-${i}`} op={op} />
+            ))}
+          </div>
+        )}
+        {!diff && memoryOps.length === 0 && toolOps.length === 0 && (
+          <div className="text-sm text-neutral-500">—</div>
+        )}
       </StepCard>
 
       <StepCard
@@ -352,13 +392,17 @@ function StepCard({
 }
 
 function HypothesisCard({ h }: { h: Hypothesis }) {
+  const areaColor =
+    h.area === "memory"
+      ? "bg-amber-100 text-amber-800"
+      : h.area === "tool"
+        ? "bg-violet-100 text-violet-800"
+        : "bg-blue-100 text-blue-800";
   return (
     <div className="rounded-md border border-neutral-200 px-3 py-2 text-sm">
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2">
-          <span className={`text-[10px] font-mono uppercase px-1.5 py-0.5 rounded ${
-            h.area === "memory" ? "bg-amber-100 text-amber-800" : "bg-blue-100 text-blue-800"
-          }`}>
+          <span className={`text-[10px] font-mono uppercase px-1.5 py-0.5 rounded ${areaColor}`}>
             {h.area}
           </span>
           <div className="font-medium">{h.issue}</div>
@@ -366,6 +410,55 @@ function HypothesisCard({ h }: { h: Hypothesis }) {
         <div className="text-xs text-neutral-500 font-mono shrink-0">sev {h.severity.toFixed(2)}</div>
       </div>
       <div className="text-xs text-neutral-500 mt-1">{h.evidence}</div>
+    </div>
+  );
+}
+
+function ToolProposalCard({ p }: { p: ToolProposal }) {
+  return (
+    <div className="rounded-md border border-violet-200 bg-violet-50/40 p-3 space-y-1 text-sm">
+      <div className="text-xs uppercase tracking-wide text-violet-700">
+        Tool · {p.type === "create_tool" ? "create" : "update"}
+        {p.type === "create_tool"
+          ? ` · ${p.name} (impl: ${p.implementationRef})`
+          : ` · ${p.toolName}`}
+      </div>
+      {p.type === "create_tool" && (
+        <div className="text-neutral-800">{p.description}</div>
+      )}
+      {p.type === "update_tool" && p.description && (
+        <div className="text-neutral-800">{p.description}</div>
+      )}
+      <div className="text-xs text-neutral-500">{p.rationale}</div>
+    </div>
+  );
+}
+
+function ToolOpCard({ op }: { op: ToolOpUi }) {
+  const colors =
+    op.op === "create" ? "border-emerald-200 bg-emerald-50/40" : "border-sky-200 bg-sky-50/40";
+  return (
+    <div className={`rounded-md border ${colors} p-2 text-xs space-y-1`}>
+      <div className="uppercase tracking-wide font-mono text-neutral-600">
+        {op.op} · {op.toolName}
+        {op.implementationRef && ` (${op.implementationRef})`}
+      </div>
+      {op.before && (
+        <div>
+          <div className="text-[10px] text-neutral-500 uppercase">before</div>
+          <div className="line-through text-neutral-700">{op.before.description}</div>
+        </div>
+      )}
+      <div>
+        <div className="text-[10px] text-neutral-500 uppercase">{op.before ? "after" : "new"}</div>
+        <div className="text-neutral-900">{op.after.description}</div>
+      </div>
+      <details className="text-[10px]">
+        <summary className="cursor-pointer text-neutral-500">args schema</summary>
+        <pre className="mt-1 whitespace-pre-wrap bg-white border border-neutral-200 rounded p-1 font-mono">
+          {op.after.argsSchemaJson}
+        </pre>
+      </details>
     </div>
   );
 }

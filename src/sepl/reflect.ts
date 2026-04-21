@@ -1,6 +1,5 @@
-// ρ — Reflect (M3). Sees current prompt, current memories, and the full
-// session trace, and returns hypotheses about prompt-level OR memory-level
-// improvements.
+// ρ — Reflect (M4). Sees current prompt, memories, tools, and the full session
+// trace; returns hypotheses targeting any of the three evolvable surfaces.
 
 import { nanoid } from "nanoid";
 import { z } from "zod";
@@ -12,13 +11,9 @@ const HypothesesSchema = z.object({
   hypotheses: z
     .array(
       z.object({
-        area: z.enum(["prompt", "memory"]),
-        issue: z
-          .string()
-          .describe("One-sentence observation of a concrete problem or missing knowledge."),
-        evidence: z
-          .string()
-          .describe("Turn index + verbatim quote that supports the issue."),
+        area: z.enum(["prompt", "memory", "tool"]),
+        issue: z.string(),
+        evidence: z.string(),
         severity: z.number().min(0).max(1),
       }),
     )
@@ -30,22 +25,28 @@ const REFLECT_SYSTEM = `You are the Reflect step of a self-evolving agent protoc
 
 You see:
 - The agent's current system prompt.
-- The agent's current memories (durable facts about the user the agent has persisted).
+- The agent's current memories (durable facts about the user).
+- The agent's current tool set (pre-audited callable functions).
+- The available allowlist of tool implementations (the model can also propose installing a tool not currently configured, by referencing an allowlist key).
 - A full session trace (user + assistant turns) that just ended.
 
-Find concrete issues the next session could do better. Classify each hypothesis as one of:
-- "prompt": the system prompt itself is wrong or incomplete (it instructs the wrong behavior, misses a rule, contains an outdated constraint).
-- "memory": there is a durable fact about the user that surfaced in this session and either (a) was not recorded, (b) was recorded inaccurately, or (c) is recorded but no longer true / has been updated. Memory hypotheses are ONLY for facts that persist across sessions (preferences, allergies, goals, long-term constraints) — not for transient session state.
+Classify each hypothesis by its evolvable surface:
+- "prompt": the system prompt itself is wrong or incomplete.
+- "memory": a durable fact about the user is missing, stale, or wrong.
+- "tool": the tool set is missing a capability the agent needed, or an existing tool's description/args are unclear enough that the agent didn't call it when it should have, or an existing tool is unused and cluttering the set.
 
 Rules:
-- Ground every hypothesis in a specific turn. Quote evidence verbatim.
-- Prefer 1–3 strong hypotheses over many weak ones. Zero is valid if the agent performed well.
-- Do not propose tool changes — that phase lands later.
-- Severity reflects expected improvement if the hypothesis is addressed. Missed safety facts (allergies, restrictions) = high; minor phrasing = low.`;
+- Ground every hypothesis in a specific turn or in the current resource list. Quote evidence verbatim when you can.
+- Prefer 1–3 strong hypotheses over many weak ones. Zero is valid.
+- Memory hypotheses are ONLY for persistent facts, not transient session state.
+- Tool hypotheses must reference either an existing tool name (for update) or an allowlist key (for create). Do not invent implementation refs.
+- Severity reflects expected improvement if addressed.`;
 
 export interface ReflectInput {
   systemPrompt: string;
   memories: Array<{ id: string; content: string; tags: string[] }>;
+  tools: Array<{ id: string; name: string; description: string; implementationRef: string }>;
+  allowlistKeys: readonly string[];
   trace: Array<{ user: string; assistant: string }>;
 }
 
@@ -56,12 +57,15 @@ export async function reflect(input: ReflectInput): Promise<Hypothesis[]> {
 
   const memText = input.memories.length
     ? input.memories
-        .map(
-          (m, i) =>
-            `${i + 1}. [${m.id}] ${m.content}${m.tags.length ? `  tags: ${m.tags.join(", ")}` : ""}`,
-        )
+        .map((m) => `- [${m.id}] ${m.content}${m.tags.length ? `  tags: ${m.tags.join(", ")}` : ""}`)
         .join("\n")
     : "(none)";
+
+  const toolText = input.tools.length
+    ? input.tools.map((t) => `- ${t.name} (${t.implementationRef}) [${t.id}]: ${t.description}`).join("\n")
+    : "(none)";
+
+  const allowlistText = input.allowlistKeys.map((k) => `- ${k}`).join("\n");
 
   const userPrompt = `## Current system prompt
 """
@@ -70,6 +74,12 @@ ${input.systemPrompt}
 
 ## Current memories
 ${memText}
+
+## Current tools
+${toolText}
+
+## Allowlist (tool implementations you may reference for create proposals)
+${allowlistText}
 
 ## Session trace (${input.trace.length} turns)
 ${traceText}

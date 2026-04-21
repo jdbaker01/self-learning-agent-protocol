@@ -2,6 +2,14 @@
 // Kept hand-authored so the spike is reproducible without hitting live agents.
 
 import type { CannedTrace, EvoState } from "./evaluate";
+import { ALLOWLIST } from "@/src/rspl/registries/tool";
+
+const STARTER_TOOLS = (["write_memory", "search_memory", "get_time"] as const).map((ref) => ({
+  name: ref,
+  description: ALLOWLIST[ref].description,
+  implementationRef: ref,
+  argsSchema: ALLOWLIST[ref].argsSchema,
+}));
 
 export const RECIPE_TRACE: CannedTrace = {
   id: "recipe_coach_v1",
@@ -38,13 +46,13 @@ Follow these rules:
 export const BASELINE_STATE: EvoState = {
   systemPrompt: BASELINE_PROMPT,
   replyStyle: "concise and friendly",
-  toolRefs: ["write_memory", "search_memory", "get_time"],
+  tools: STARTER_TOOLS,
   memories: [],
 };
 
 export const CANDIDATE_STATE: EvoState = {
   systemPrompt: CANDIDATE_PROMPT,
   replyStyle: "concise, actionable, and safety-first",
-  toolRefs: ["write_memory", "search_memory", "get_time"],
+  tools: STARTER_TOOLS,
   memories: [],
 };

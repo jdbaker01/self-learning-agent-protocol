@@ -11,7 +11,19 @@ import { MemoryRegistry } from "./memory";
 export type AllowlistKey =
   | "write_memory"
   | "search_memory"
-  | "get_time";
+  | "get_time"
+  | "count_words"
+  | "get_date_offset"
+  | "list_memories";
+
+export const ALLOWLIST_KEYS: readonly AllowlistKey[] = [
+  "write_memory",
+  "search_memory",
+  "get_time",
+  "count_words",
+  "get_date_offset",
+  "list_memories",
+] as const;
 
 export interface ToolImpl {
   implementationRef: AllowlistKey;
@@ -67,6 +79,50 @@ export const ALLOWLIST: Record<AllowlistKey, { description: string; argsSchema: 
     argsSchema: { type: "object", properties: {}, additionalProperties: false },
     run: () => ({ now: new Date().toISOString() }),
   },
+  count_words: {
+    description: "Return the number of whitespace-delimited words in a text string.",
+    argsSchema: {
+      type: "object",
+      properties: { text: { type: "string" } },
+      required: ["text"],
+      additionalProperties: false,
+    },
+    run: (_agentId, args) => {
+      const p = z.object({ text: z.string() }).parse(args);
+      const count = p.text.trim().length === 0 ? 0 : p.text.trim().split(/\s+/).length;
+      return { count };
+    },
+  },
+  get_date_offset: {
+    description: "Return the ISO date (YYYY-MM-DD) offset from today by N days. Use for 'in X days', 'next week', scheduling.",
+    argsSchema: {
+      type: "object",
+      properties: {
+        days: { type: "integer", description: "Days from today; negative for past dates." },
+      },
+      required: ["days"],
+      additionalProperties: false,
+    },
+    run: (_agentId, args) => {
+      const p = z.object({ days: z.number().int() }).parse(args);
+      const d = new Date();
+      d.setUTCDate(d.getUTCDate() + p.days);
+      return { date: d.toISOString().slice(0, 10), days: p.days };
+    },
+  },
+  list_memories: {
+    description: "List all stored memories for this agent (no query). Returns up to 50 entries ordered by creation. Use when you need a full overview, not a targeted lookup.",
+    argsSchema: { type: "object", properties: {}, additionalProperties: false },
+    run: async (agentId) => {
+      const rows = MemoryRegistry.listMemories(agentId);
+      return {
+        memories: rows.slice(0, 50).map((r) => {
+          const impl = r.impl as { content: string; tags: string[] };
+          return { id: r.id, content: impl.content, tags: impl.tags };
+        }),
+      };
+    },
+  },
 };
 
 class ToolRegistryClass extends ContextManager {
@@ -74,16 +130,54 @@ class ToolRegistryClass extends ContextManager {
     super("tool");
   }
 
-  installTool(agentId: string, name: string, ref: AllowlistKey): RegistrationRecord<ToolImpl> {
+  installTool(
+    agentId: string,
+    name: string,
+    ref: AllowlistKey,
+    overrides?: { description?: string; argsSchema?: Record<string, unknown> },
+    createdBy: string = "system",
+  ): RegistrationRecord<ToolImpl> {
     const entry = ALLOWLIST[ref];
+    const description = overrides?.description ?? entry.description;
+    const argsSchema = overrides?.argsSchema ?? entry.argsSchema;
     return this.register({
       agentId,
       name,
-      description: entry.description,
+      description,
       learnable: true,
-      impl: { implementationRef: ref, argsSchema: entry.argsSchema } satisfies ToolImpl,
-      contract: { kind: "tool", argsSchema: entry.argsSchema, usage: entry.description },
+      impl: { implementationRef: ref, argsSchema } satisfies ToolImpl,
+      contract: { kind: "tool", argsSchema, usage: description },
+      createdBy,
     }) as RegistrationRecord<ToolImpl>;
+  }
+
+  /**
+   * Edit description and/or argsSchema of an existing tool. implementation_ref
+   * is immutable via update (use installTool + delete for a swap). Bumps version.
+   */
+  updateToolMeta(
+    toolId: string,
+    patch: { description?: string; argsSchema?: Record<string, unknown> },
+    createdBy: string = "system",
+  ): RegistrationRecord<ToolImpl> {
+    const current = this.getById(toolId);
+    if (!current) throw new Error(`tool ${toolId} not found`);
+    const impl = current.impl as ToolImpl;
+    const nextArgs = patch.argsSchema ?? impl.argsSchema;
+    const nextDesc = patch.description ?? current.description;
+    return this.update(
+      toolId,
+      {
+        impl: { implementationRef: impl.implementationRef, argsSchema: nextArgs },
+        description: nextDesc,
+        contract: { kind: "tool", argsSchema: nextArgs, usage: nextDesc },
+      },
+      createdBy,
+    ) as RegistrationRecord<ToolImpl>;
+  }
+
+  deleteTool(toolId: string): void {
+    this.unregister(toolId);
   }
 
   listTools(agentId: string): RegistrationRecord<ToolImpl>[] {

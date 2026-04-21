@@ -11,13 +11,19 @@
 import { z } from "zod";
 import { generateText, generateObject } from "ai";
 import { ModelManager } from "@/src/rspl/infra/modelManager";
-import type { AllowlistKey } from "@/src/rspl/registries/tool";
 import { ALLOWLIST } from "@/src/rspl/registries/tool";
+
+export interface EvoTool {
+  name: string;
+  description: string;
+  implementationRef: string;
+  argsSchema: Record<string, unknown>;
+}
 
 export interface EvoState {
   systemPrompt: string;
   replyStyle: string;
-  toolRefs: AllowlistKey[];
+  tools: EvoTool[];
   memories: Array<{ content: string; tags?: string[] }>;
 }
 
@@ -43,6 +49,8 @@ export interface RuleGateResult {
 const PROMPT_TOKEN_BUDGET = 4_000; // ~4 chars/token rough estimate
 const MEMORY_ENTRY_BUDGET = 200;
 const MEMORY_CONTENT_MAX = 500;
+const TOOL_COUNT_MAX = 12;
+const TOOL_DESC_MAX = 400;
 
 export function ruleGates(state: EvoState): RuleGateResult {
   const violations: string[] = [];
@@ -53,9 +61,28 @@ export function ruleGates(state: EvoState): RuleGateResult {
   }
   if (!state.systemPrompt.trim()) violations.push("prompt is empty");
 
-  // Tools: all refs must be on the allowlist.
-  for (const ref of state.toolRefs) {
-    if (!(ref in ALLOWLIST)) violations.push(`tool ref '${ref}' not on allowlist`);
+  // Tools: each tool's impl ref must be on the allowlist; argsSchema must be an object.
+  if (state.tools.length > TOOL_COUNT_MAX) {
+    violations.push(`too many tools (${state.tools.length} > ${TOOL_COUNT_MAX})`);
+  }
+  const names = new Set<string>();
+  for (const t of state.tools) {
+    if (!(t.implementationRef in ALLOWLIST)) {
+      violations.push(`tool '${t.name}' ref '${t.implementationRef}' not on allowlist`);
+    }
+    if (!t.description || t.description.length > TOOL_DESC_MAX) {
+      violations.push(`tool '${t.name}' has invalid description`);
+    }
+    if (!t.argsSchema || typeof t.argsSchema !== "object" || Array.isArray(t.argsSchema)) {
+      violations.push(`tool '${t.name}' has invalid argsSchema`);
+    } else {
+      const s = t.argsSchema as Record<string, unknown>;
+      if (s.type !== "object") {
+        violations.push(`tool '${t.name}' argsSchema.type must be "object"`);
+      }
+    }
+    if (names.has(t.name)) violations.push(`duplicate tool name '${t.name}'`);
+    names.add(t.name);
   }
 
   // Memory budget.
@@ -106,10 +133,15 @@ export async function generateCandidateReplies(
 }
 
 function buildSystem(state: EvoState): string {
+  const toolBlock = state.tools.length
+    ? `\n\n# Available tools (for reference — describe using them naturally; do not call them in this reply)\n${state.tools
+        .map((t) => `- ${t.name} (${t.implementationRef}): ${t.description}`)
+        .join("\n")}`
+    : "";
   const memBlock = state.memories.length
     ? `\n\n# Memories (persisted about the user)\n${state.memories.map((m) => `- ${m.content}`).join("\n")}`
     : "";
-  return `${state.systemPrompt}\n\n# Reply style\n${state.replyStyle}${memBlock}`;
+  return `${state.systemPrompt}\n\n# Reply style\n${state.replyStyle}${toolBlock}${memBlock}`;
 }
 
 // --- Judge --------------------------------------------------------------------
