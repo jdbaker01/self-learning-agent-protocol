@@ -2,7 +2,12 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { LearnEvent, Hypothesis, UpdatePromptProposal } from "@/src/sepl/types";
+import type {
+  LearnEvent,
+  Hypothesis,
+  UpdatePromptProposal,
+  MemoryProposal,
+} from "@/src/sepl/types";
 
 interface Props {
   agentId: string;
@@ -26,15 +31,24 @@ interface CommitSummary {
   reason: string;
 }
 
+interface MemoryOpUi {
+  op: "write" | "update" | "delete";
+  memoryId?: string;
+  before?: string;
+  after?: string;
+}
+
 export function LearnStream({ agentId, agentName, sessionId, sessionStatus }: Props) {
   // useRef, not useState: the ref mutation is synchronous so React
   // StrictMode's dev-only double-invoke of effects can't fire /learn twice.
   const startedRef = useRef(false);
-  const [started, setStarted] = useState(false);
+  const [, setStarted] = useState(false);
   const [stage, setStage] = useState<Stage>("idle");
   const [hypotheses, setHypotheses] = useState<Hypothesis[]>([]);
-  const [proposal, setProposal] = useState<UpdatePromptProposal | null>(null);
+  const [promptProposal, setPromptProposal] = useState<UpdatePromptProposal | null>(null);
+  const [memoryProposals, setMemoryProposals] = useState<MemoryProposal[]>([]);
   const [diff, setDiff] = useState<{ before: string; after: string } | null>(null);
+  const [memoryOps, setMemoryOps] = useState<MemoryOpUi[]>([]);
   const [evaluateNotes, setEvaluateNotes] = useState<string[]>([]);
   const [evalSummary, setEvalSummary] = useState<EvalSummary | null>(null);
   const [commitSummary, setCommitSummary] = useState<CommitSummary | null>(null);
@@ -73,7 +87,7 @@ export function LearnStream({ agentId, agentName, sessionId, sessionStatus }: Pr
         applyEvent(evt);
       }
     }
-  }, [sessionId, started]);
+  }, [sessionId]);
 
   function applyEvent(evt: LearnEvent) {
     switch (evt.type) {
@@ -87,13 +101,23 @@ export function LearnStream({ agentId, agentName, sessionId, sessionStatus }: Pr
         setStage("select");
         break;
       case "select.proposal":
-        setProposal(evt.proposal);
+        if (evt.proposal.type === "update_prompt") {
+          setPromptProposal(evt.proposal);
+        } else {
+          setMemoryProposals((m) => [...m, evt.proposal as MemoryProposal]);
+        }
         break;
       case "improve.begin":
         setStage("improve");
         break;
-      case "improve.diff":
+      case "improve.promptDiff":
         setDiff({ before: evt.before, after: evt.after });
+        break;
+      case "improve.memoryOp":
+        setMemoryOps((m) => [
+          ...m,
+          { op: evt.op, memoryId: evt.memoryId, before: evt.before, after: evt.after },
+        ]);
         break;
       case "evaluate.begin":
         setStage("evaluate");
@@ -130,12 +154,13 @@ export function LearnStream({ agentId, agentName, sessionId, sessionStatus }: Pr
   }
 
   useEffect(() => {
-    if (sessionStatus === "ended" && !started) {
+    if (sessionStatus === "ended" && !startedRef.current) {
       start();
     }
-  }, [sessionStatus, started, start]);
+  }, [sessionStatus, start]);
 
   const alreadyLearned = sessionStatus === "learned";
+  const hasAnyProposal = promptProposal !== null || memoryProposals.length > 0;
 
   return (
     <div className="max-w-3xl mx-auto space-y-5">
@@ -158,7 +183,7 @@ export function LearnStream({ agentId, agentName, sessionId, sessionStatus }: Pr
         </Link>
       </header>
 
-      {alreadyLearned && !started && (
+      {alreadyLearned && !startedRef.current && (
         <Callout kind="info">
           This session has already been learned from. <Link href={`/agents/${agentId}/chat`} className="underline">Start a new session</Link> to continue.
         </Callout>
@@ -184,36 +209,40 @@ export function LearnStream({ agentId, agentName, sessionId, sessionStatus }: Pr
       <StepCard
         n={2}
         title="Select"
-        subtitle="Translate hypotheses into a concrete change proposal"
+        subtitle="Translate hypotheses into concrete change proposals"
         active={stage === "select"}
-        done={proposal !== null && stage !== "select"}
+        done={hasAnyProposal && stage !== "select"}
       >
-        {proposal ? (
-          <div className="space-y-2">
-            <div className="text-xs uppercase tracking-wide text-neutral-500">Proposal</div>
-            <div className="text-sm">
-              <span className="font-mono text-xs bg-neutral-100 px-1.5 py-0.5 rounded">{proposal.type}</span>{" "}
-              <span className="text-neutral-600">addresses {proposal.addresses.length} hypothes{proposal.addresses.length === 1 ? "is" : "es"}</span>
+        {!hasAnyProposal && <div className="text-sm text-neutral-500">—</div>}
+        {promptProposal && (
+          <div className="rounded-md border border-neutral-200 p-3 space-y-1">
+            <div className="text-xs uppercase tracking-wide text-neutral-500">
+              Prompt proposal · addresses {promptProposal.addresses.length} hypothes{promptProposal.addresses.length === 1 ? "is" : "es"}
             </div>
-            <div className="text-sm text-neutral-700">{proposal.rationale}</div>
+            <div className="text-sm text-neutral-700">{promptProposal.rationale}</div>
           </div>
-        ) : (
-          <div className="text-sm text-neutral-500">—</div>
         )}
+        {memoryProposals.map((p, i) => (
+          <MemoryProposalCard key={i} p={p} />
+        ))}
       </StepCard>
 
       <StepCard
         n={3}
         title="Improve"
-        subtitle="Build the candidate V_evo (prompt diff)"
+        subtitle="Build the candidate V_evo (prompt diff + memory ops)"
         active={stage === "improve"}
-        done={diff !== null && stage !== "improve"}
+        done={(diff !== null || memoryOps.length > 0) && stage !== "improve"}
       >
-        {diff ? (
-          <DiffView before={diff.before} after={diff.after} />
-        ) : (
-          <div className="text-sm text-neutral-500">—</div>
+        {diff && <DiffView before={diff.before} after={diff.after} />}
+        {memoryOps.length > 0 && (
+          <div className="space-y-2">
+            {memoryOps.map((op, i) => (
+              <MemoryOpCard key={i} op={op} />
+            ))}
+          </div>
         )}
+        {!diff && memoryOps.length === 0 && <div className="text-sm text-neutral-500">—</div>}
       </StepCard>
 
       <StepCard
@@ -254,11 +283,11 @@ export function LearnStream({ agentId, agentName, sessionId, sessionStatus }: Pr
           <div className="text-sm">
             {commitSummary.committed ? (
               <div className="text-emerald-700">
-                ✓ Committed prompt v{commitSummary.newVersion}
+                ✓ Committed{commitSummary.newVersion ? ` · prompt v${commitSummary.newVersion}` : ""}
               </div>
             ) : (
               <div className="text-neutral-700">
-                ✗ Candidate rejected — no version bump.
+                ✗ Candidate rejected — no changes applied.
               </div>
             )}
             <div className="text-xs text-neutral-500 mt-1">{commitSummary.reason}</div>
@@ -326,10 +355,65 @@ function HypothesisCard({ h }: { h: Hypothesis }) {
   return (
     <div className="rounded-md border border-neutral-200 px-3 py-2 text-sm">
       <div className="flex items-start justify-between gap-2">
-        <div className="font-medium">{h.issue}</div>
+        <div className="flex items-center gap-2">
+          <span className={`text-[10px] font-mono uppercase px-1.5 py-0.5 rounded ${
+            h.area === "memory" ? "bg-amber-100 text-amber-800" : "bg-blue-100 text-blue-800"
+          }`}>
+            {h.area}
+          </span>
+          <div className="font-medium">{h.issue}</div>
+        </div>
         <div className="text-xs text-neutral-500 font-mono shrink-0">sev {h.severity.toFixed(2)}</div>
       </div>
       <div className="text-xs text-neutral-500 mt-1">{h.evidence}</div>
+    </div>
+  );
+}
+
+function MemoryProposalCard({ p }: { p: MemoryProposal }) {
+  const label: Record<MemoryProposal["type"], string> = {
+    write_memory: "write",
+    update_memory: "update",
+    delete_memory: "delete",
+  };
+  const content = p.type === "delete_memory" ? `delete ${p.memoryId}` : p.content;
+  return (
+    <div className="rounded-md border border-amber-200 bg-amber-50/40 p-3 space-y-1 text-sm">
+      <div className="text-xs uppercase tracking-wide text-amber-700">
+        Memory · {label[p.type]}
+        {"memoryId" in p && ` · ${p.memoryId}`}
+      </div>
+      <div className="text-neutral-800">{content}</div>
+      <div className="text-xs text-neutral-500">{p.rationale}</div>
+    </div>
+  );
+}
+
+function MemoryOpCard({ op }: { op: MemoryOpUi }) {
+  const colors =
+    op.op === "write"
+      ? "border-emerald-200 bg-emerald-50/40"
+      : op.op === "delete"
+        ? "border-red-200 bg-red-50/40"
+        : "border-sky-200 bg-sky-50/40";
+  return (
+    <div className={`rounded-md border ${colors} p-2 text-xs`}>
+      <div className="uppercase tracking-wide font-mono text-neutral-600">
+        {op.op}
+        {op.memoryId && ` · ${op.memoryId}`}
+      </div>
+      {op.before && (
+        <div className="mt-1">
+          <span className="text-neutral-500">before: </span>
+          <span className="line-through text-neutral-700">{op.before}</span>
+        </div>
+      )}
+      {op.after && (
+        <div>
+          <span className="text-neutral-500">after: </span>
+          <span className="text-neutral-900">{op.after}</span>
+        </div>
+      )}
     </div>
   );
 }

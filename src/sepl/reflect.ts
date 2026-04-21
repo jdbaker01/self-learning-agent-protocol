@@ -1,5 +1,6 @@
-// ρ — Reflect. Reads the session trace plus current V_evo (system prompt only
-// in M2) and produces structured hypotheses about prompt-level improvements.
+// ρ — Reflect (M3). Sees current prompt, current memories, and the full
+// session trace, and returns hypotheses about prompt-level OR memory-level
+// improvements.
 
 import { nanoid } from "nanoid";
 import { z } from "zod";
@@ -11,42 +12,40 @@ const HypothesesSchema = z.object({
   hypotheses: z
     .array(
       z.object({
+        area: z.enum(["prompt", "memory"]),
         issue: z
           .string()
-          .describe("One-sentence observation of a concrete problem in the session or an opportunity the current prompt misses."),
+          .describe("One-sentence observation of a concrete problem or missing knowledge."),
         evidence: z
           .string()
-          .describe("Turn index + short verbatim quote that supports the issue, e.g. 'turn 2: user said \"...\" but agent replied \"...\"'."),
-        severity: z
-          .number()
-          .min(0)
-          .max(1)
-          .describe("0..1 — how much impact fixing this would have on the agent's performance."),
+          .describe("Turn index + verbatim quote that supports the issue."),
+        severity: z.number().min(0).max(1),
       }),
     )
     .min(0)
-    .max(5)
-    .describe("Up to 5 distinct hypotheses. Fewer is fine — only include ones supported by the trace."),
+    .max(6),
 });
 
 const REFLECT_SYSTEM = `You are the Reflect step of a self-evolving agent protocol.
 
 You see:
-- The agent's current system prompt (what it is instructed to do).
-- A full session trace (user messages and agent replies) that has just ended.
+- The agent's current system prompt.
+- The agent's current memories (durable facts about the user the agent has persisted).
+- A full session trace (user + assistant turns) that just ended.
 
-Your job: find concrete, *prompt-level* problems in how the agent performed, and propose them as hypotheses. Each hypothesis should be something the system prompt could have caused or could fix.
+Find concrete issues the next session could do better. Classify each hypothesis as one of:
+- "prompt": the system prompt itself is wrong or incomplete (it instructs the wrong behavior, misses a rule, contains an outdated constraint).
+- "memory": there is a durable fact about the user that surfaced in this session and either (a) was not recorded, (b) was recorded inaccurately, or (c) is recorded but no longer true / has been updated. Memory hypotheses are ONLY for facts that persist across sessions (preferences, allergies, goals, long-term constraints) — not for transient session state.
 
 Rules:
 - Ground every hypothesis in a specific turn. Quote evidence verbatim.
-- Prefer a few strong hypotheses (1–3) over many weak ones. Zero is a valid answer if the agent performed well.
-- Do not propose memory or tool changes — this phase is prompt-only.
-- Do not propose style nits (emoji, tone) unless they materially hurt the user.
-- Severity reflects the expected improvement *if* the prompt caught this. A missed safety-relevant issue (e.g. ignoring a stated allergy) is high severity; a minor phrasing issue is low.`;
+- Prefer 1–3 strong hypotheses over many weak ones. Zero is valid if the agent performed well.
+- Do not propose tool changes — that phase lands later.
+- Severity reflects expected improvement if the hypothesis is addressed. Missed safety facts (allergies, restrictions) = high; minor phrasing = low.`;
 
 export interface ReflectInput {
   systemPrompt: string;
-  /** Oldest → newest. Each turn is one user/assistant pair. */
+  memories: Array<{ id: string; content: string; tags: string[] }>;
   trace: Array<{ user: string; assistant: string }>;
 }
 
@@ -55,10 +54,22 @@ export async function reflect(input: ReflectInput): Promise<Hypothesis[]> {
     .map((t, i) => `Turn ${i}:\n  user: ${JSON.stringify(t.user)}\n  assistant: ${JSON.stringify(t.assistant)}`)
     .join("\n\n");
 
+  const memText = input.memories.length
+    ? input.memories
+        .map(
+          (m, i) =>
+            `${i + 1}. [${m.id}] ${m.content}${m.tags.length ? `  tags: ${m.tags.join(", ")}` : ""}`,
+        )
+        .join("\n")
+    : "(none)";
+
   const userPrompt = `## Current system prompt
 """
 ${input.systemPrompt}
 """
+
+## Current memories
+${memText}
 
 ## Session trace (${input.trace.length} turns)
 ${traceText}
@@ -75,7 +86,7 @@ Return hypotheses as JSON per the schema.`;
 
   return object.hypotheses.map((h) => ({
     id: `hyp_${nanoid(8)}`,
-    area: "prompt" as const,
+    area: h.area,
     issue: h.issue,
     evidence: h.evidence,
     severity: h.severity,

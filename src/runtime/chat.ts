@@ -9,7 +9,12 @@ import { ModelManager } from "@/src/rspl/infra/modelManager";
 import { PromptRegistry } from "@/src/rspl/registries/prompt";
 import { AgentPolicyRegistry } from "@/src/rspl/registries/agent";
 import { ToolRegistry, ALLOWLIST, type ToolImpl } from "@/src/rspl/registries/tool";
+import { MemoryRegistry } from "@/src/rspl/registries/memory";
 import { Tracer, type ToolCallTrace, type TurnTrace } from "@/src/rspl/infra/tracer";
+
+/** Inject top-k semantic memories that clear this threshold into the system prompt. */
+const MEMORY_INJECT_K = 5;
+const MEMORY_INJECT_MIN_SIM = 0.3;
 
 export interface ChatTurnInput {
   sessionId: string;
@@ -61,7 +66,7 @@ export function getSessionHistory(sessionId: string): Array<{ role: "user" | "as
  * Run one chat turn, returning a streaming response that the caller can pipe
  * to the client. Records the trace after the stream finishes (onFinish).
  */
-export function runChatTurn(input: ChatTurnInput) {
+export async function runChatTurn(input: ChatTurnInput) {
   const session = getSession(input.sessionId);
   if (!session) throw new Error(`session ${input.sessionId} not found`);
   if (session.status !== "open") throw new Error(`session ${input.sessionId} is ${session.status}`);
@@ -70,6 +75,17 @@ export function runChatTurn(input: ChatTurnInput) {
   const systemPrompt = PromptRegistry.getSystemPrompt(agentId);
   const policy = AgentPolicyRegistry.getPolicy(agentId);
   const tools = ToolRegistry.listTools(agentId);
+
+  // Semantic memory retrieval: pull top-k memories relevant to the user's
+  // current message and inject them alongside the system prompt. The agent
+  // can still call search_memory explicitly, but auto-retrieval ensures the
+  // model always sees durable facts about the user without having to ask.
+  const memoryHits = await MemoryRegistry.searchSemantic(
+    agentId,
+    input.userMessage,
+    MEMORY_INJECT_K,
+    MEMORY_INJECT_MIN_SIM,
+  );
 
   // Snapshot the resource versions used by this turn (for auditability).
   const resourceVersions: Record<string, string> = {};
@@ -133,7 +149,16 @@ export function runChatTurn(input: ChatTurnInput) {
   // drop the turn we just inserted (content empty)
   const prior = history;
 
-  const effectiveSystem = `${systemPrompt}\n\n# Reply style\n${policy.replyStyle}`;
+  const memoryBlock =
+    memoryHits.length > 0
+      ? `\n\n# Retrieved memories (most relevant to this user message)\n${memoryHits
+          .map(
+            (h) =>
+              `- ${h.content}${h.tags.length ? ` [${h.tags.join(", ")}]` : ""}`,
+          )
+          .join("\n")}`
+      : "";
+  const effectiveSystem = `${systemPrompt}\n\n# Reply style\n${policy.replyStyle}${memoryBlock}`;
   const t0 = Date.now();
 
   const result = streamText({

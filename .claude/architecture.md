@@ -40,6 +40,14 @@ All via `src/rspl/infra/modelManager.ts`. Env overrides: `SLAP_<TIER>_MODEL`.
 
 Tools are callable via an **allowlist of implementation-refs** (`src/rspl/registries/tool.ts`): `write_memory`, `search_memory`, `get_time`. The LLM can configure/rename tools but never authors code. M4 expands the allowlist (e.g. `fetch_url`, `calculator`). Arbitrary code execution is out of scope.
 
+## Memory (M3)
+
+Each memory is a resource (`entity_type='memory'`) with `impl: { content, tags }`. Its embedding lives in `memory_embeddings(version_id, dim, embedding)` as packed Float32 (little-endian). Retrieval: `MemoryRegistry.searchSemantic(agentId, query, k, minSim)` embeds the query, cosines against every head embedding for the agent, returns top-k.
+
+Chat runtime (`src/runtime/chat.ts`) auto-retrieves top-5 memories above cosine ≥ 0.3 on every user message and injects them into the system prompt as a `# Retrieved memories` block. The `search_memory` tool is still available for explicit lookups and returns scores.
+
+SEPL `ProposalBundle` (`src/sepl/types.ts`): optional `update_prompt` + array of `{ write_memory | update_memory | delete_memory }`. Commit applies the whole bundle atomically with `createdBy="sepl:<learn_run_id>"`.
+
 ## Evaluation (ε)
 
 `src/sepl/evaluate.ts`. Two layers:

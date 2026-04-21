@@ -57,6 +57,17 @@ CREATE TABLE IF NOT EXISTS resource_head (
   FOREIGN KEY (version_id)  REFERENCES resource_versions(id) ON DELETE CASCADE
 );
 
+-- Embeddings per memory version (M3). Keyed to resource_versions.id so a new
+-- version automatically gets its own row. Vector is a packed Float32Array as
+-- a BLOB; we do cosine in TS over the agent's memory set, which is small
+-- enough for this app. Swap in a libSQL vector index when we deploy.
+CREATE TABLE IF NOT EXISTS memory_embeddings (
+  version_id    TEXT PRIMARY KEY,
+  dim           INTEGER NOT NULL,
+  embedding     BLOB NOT NULL,
+  FOREIGN KEY (version_id) REFERENCES resource_versions(id) ON DELETE CASCADE
+);
+
 -- Chat sessions. One session = one contiguous conversation window, ended before Learn.
 CREATE TABLE IF NOT EXISTS sessions (
   id            TEXT PRIMARY KEY,

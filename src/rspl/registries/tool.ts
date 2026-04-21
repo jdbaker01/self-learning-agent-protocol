@@ -6,8 +6,7 @@
 import { z } from "zod";
 import { ContextManager } from "../contextManager";
 import type { RegistrationRecord } from "../record";
-import { getDb } from "@/src/storage/db";
-import { nanoid } from "nanoid";
+import { MemoryRegistry } from "./memory";
 
 export type AllowlistKey =
   | "write_memory"
@@ -34,63 +33,33 @@ export const ALLOWLIST: Record<AllowlistKey, { description: string; argsSchema: 
     run: async (agentId, args) => {
       const schema = z.object({ content: z.string(), tags: z.array(z.string()).optional() });
       const p = schema.parse(args);
-      const id = `mem_${nanoid(12)}`;
-      getDb()
-        .prepare(
-          `INSERT INTO resources (id, agent_id, entity_type, name, description, learnable, metadata)
-           VALUES (?, ?, 'memory', ?, ?, 1, ?)`,
-        )
-        .run(id, agentId, `mem-${id.slice(0, 6)}`, p.content.slice(0, 120), JSON.stringify({ tags: p.tags ?? [] }));
-      const verId = `ver_${nanoid(12)}`;
-      getDb()
-        .prepare(
-          `INSERT INTO resource_versions (id, resource_id, version, impl, params, contract)
-           VALUES (?, ?, '0.1.0', ?, '{}', ?)`,
-        )
-        .run(
-          verId,
-          id,
-          JSON.stringify({ content: p.content, tags: p.tags ?? [] }),
-          JSON.stringify({ kind: "retrieval", usage: "memory entry" }),
-        );
-      getDb()
-        .prepare(`INSERT INTO resource_head (resource_id, version_id) VALUES (?, ?)`)
-        .run(id, verId);
-      return { stored: true, id };
+      const { memoryId } = await MemoryRegistry.addMemory(agentId, p.content, p.tags ?? []);
+      return { stored: true, id: memoryId };
     },
   },
   search_memory: {
-    description: "Substring-search stored memories for this agent. Returns up to 10 hits.",
+    description: "Semantically search stored memories for this agent. Returns up to 5 relevant hits with similarity scores.",
     argsSchema: {
       type: "object",
-      properties: { query: { type: "string" } },
+      properties: {
+        query: { type: "string" },
+        k: { type: "number", description: "Max hits to return (default 5).", minimum: 1, maximum: 10 },
+      },
       required: ["query"],
       additionalProperties: false,
     },
     run: async (agentId, args) => {
-      const schema = z.object({ query: z.string() });
+      const schema = z.object({ query: z.string(), k: z.number().int().min(1).max(10).optional() });
       const p = schema.parse(args);
-      type Row = { id: string; impl: string; description: string };
-      const rows = getDb()
-        .prepare<[string], Row>(
-          `SELECT r.id, v.impl, r.description
-           FROM resources r
-           JOIN resource_head h ON h.resource_id = r.id
-           JOIN resource_versions v ON v.id = h.version_id
-           WHERE r.agent_id = ? AND r.entity_type = 'memory'
-           ORDER BY r.created_at DESC`,
-        )
-        .all(agentId);
-      const q = p.query.toLowerCase();
-      const hits = rows
-        .map((r) => ({
-          id: r.id,
-          content: (JSON.parse(r.impl) as { content: string }).content,
-          description: r.description,
-        }))
-        .filter((r) => r.content.toLowerCase().includes(q))
-        .slice(0, 10);
-      return { hits };
+      const hits = await MemoryRegistry.searchSemantic(agentId, p.query, p.k ?? 5);
+      return {
+        hits: hits.map((h) => ({
+          id: h.id,
+          content: h.content,
+          tags: h.tags,
+          similarity: Number(h.similarity.toFixed(4)),
+        })),
+      };
     },
   },
   get_time: {

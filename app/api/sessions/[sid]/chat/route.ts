@@ -20,7 +20,7 @@ export async function POST(
     return NextResponse.json({ error: "invalid input" }, { status: 400 });
   }
   try {
-    const { result } = runChatTurn({
+    const { result } = await runChatTurn({
       sessionId: sid,
       userMessage: parsed.data.message,
     });

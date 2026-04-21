@@ -62,6 +62,7 @@ export interface RegisterArgs {
   params?: Record<string, unknown>;
   contract: ExportedContract;
   version?: string; // defaults to 0.1.0
+  createdBy?: string; // default 'system'; use 'sepl:<learn_run_id>' for SEPL-origin resources
 }
 
 /**
@@ -105,8 +106,8 @@ export class ContextManager {
       );
 
       db.prepare(
-        `INSERT INTO resource_versions (id, resource_id, version, impl, params, contract)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO resource_versions (id, resource_id, version, impl, params, contract, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         versionId,
         resourceId,
@@ -114,6 +115,7 @@ export class ContextManager {
         JSON.stringify(args.impl),
         JSON.stringify(args.params ?? {}),
         JSON.stringify(args.contract),
+        args.createdBy ?? "system",
       );
 
       db.prepare(

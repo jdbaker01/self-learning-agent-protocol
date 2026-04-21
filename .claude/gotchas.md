@@ -58,6 +58,18 @@ API routes touching the database must `export const runtime = "nodejs"`. The Edg
 
 Immediately after creating a new remote, `git push` can 404 for a second or two. Either use `gh repo create --push` (gh handles the retry) or `sleep 3` before the first push.
 
+## OpenAI strict JSON requires every property in `required`
+
+When using `generateObject({ model: ModelManager.forTier(...) })` with zod, OpenAI's structured-output mode enforces **strict schema**: every key in `properties` must also appear in `required`. zod's `.default([])` / `.optional()` produce optional keys and trigger:
+
+```
+Invalid schema for response_format 'response': ... 'required' is required to be supplied and to be an array including every key in properties. Missing 'tags'.
+```
+
+Fix: drop the `.default()` / `.optional()`. If you need a default, have the model always emit the field (document it in `.describe("... pass [] if none")`) and handle empties at the call site.
+
+Symptom: the generateObject call throws mid-SEPL, the learn_runs row lands as `status='failed'`, and the streamed UI shows a red error.
+
 ## React StrictMode double-fires effects
 
 React 19 dev mode intentionally mounts every component twice. `useState` + `setState` as a "have we started?" guard is not synchronous — the second effect invocation still sees the old value and fires again.

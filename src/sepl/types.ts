@@ -1,10 +1,10 @@
-// Shared SEPL types (paper §3.2). Scoped to M2: prompt-only proposals.
-// In M3/M4 the Proposal union widens to include memory and tool operations.
+// Shared SEPL types (paper §3.2). M3: prompt + memory proposals.
+// M4 will add tool proposals.
 
 export interface Hypothesis {
   id: string;
-  /** Which evolvable surface the hypothesis implicates. M2 is prompt-only. */
-  area: "prompt";
+  /** Which evolvable surface the hypothesis implicates. */
+  area: "prompt" | "memory";
   /** One-sentence statement of the failure mode or improvement opportunity. */
   issue: string;
   /** Reference to the turn + short quote that justifies the hypothesis. */
@@ -23,7 +23,43 @@ export interface UpdatePromptProposal {
   addresses: string[];
 }
 
-export type Proposal = UpdatePromptProposal;
+export interface WriteMemoryProposal {
+  type: "write_memory";
+  content: string;
+  tags: string[];
+  rationale: string;
+  addresses: string[];
+}
+
+export interface UpdateMemoryProposal {
+  type: "update_memory";
+  /** Resource id of the memory to modify. */
+  memoryId: string;
+  content: string;
+  tags: string[];
+  rationale: string;
+  addresses: string[];
+}
+
+export interface DeleteMemoryProposal {
+  type: "delete_memory";
+  memoryId: string;
+  rationale: string;
+  addresses: string[];
+}
+
+export type MemoryProposal =
+  | WriteMemoryProposal
+  | UpdateMemoryProposal
+  | DeleteMemoryProposal;
+
+export type Proposal = UpdatePromptProposal | MemoryProposal;
+
+/** The full bundle a single Learn run may commit (or reject) as a unit. */
+export interface ProposalBundle {
+  updatePrompt?: UpdatePromptProposal;
+  memoryOps: MemoryProposal[];
+}
 
 /** Streamed to the Learn UI — one event per observable step. */
 export type LearnEvent =
@@ -33,9 +69,16 @@ export type LearnEvent =
   | { type: "reflect.end"; count: number }
   | { type: "select.begin" }
   | { type: "select.proposal"; proposal: Proposal }
-  | { type: "select.end" }
+  | { type: "select.end"; promptChanged: boolean; memoryOpCount: number }
   | { type: "improve.begin" }
-  | { type: "improve.diff"; before: string; after: string }
+  | { type: "improve.promptDiff"; before: string; after: string }
+  | {
+      type: "improve.memoryOp";
+      op: "write" | "update" | "delete";
+      memoryId?: string;
+      before?: string;
+      after?: string;
+    }
   | { type: "improve.end" }
   | { type: "evaluate.begin" }
   | { type: "evaluate.progress"; stage: string; note?: string }
